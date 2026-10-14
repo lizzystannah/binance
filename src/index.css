@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 18% 6%;
+    --foreground: 150 30% 92%;
+
+    --card: 220 16% 9%;
+    --card-foreground: 150 30% 92%;
+
+    --popover: 220 16% 9%;
+    --popover-foreground: 150 30% 92%;
+
+    --primary: 142 90% 50%;
+    --primary-foreground: 220 30% 6%;
+
+    --secondary: 220 14% 14%;
+    --secondary-foreground: 150 30% 92%;
+
+    --muted: 220 14% 12%;
+    --muted-foreground: 150 8% 55%;
+
+    --accent: 168 90% 45%;
+    --accent-foreground: 220 30% 6%;
+
+    --destructive: 0 90% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 14% 16%;
+    --input: 220 14% 14%;
+    --ring: 142 90% 50%;
+
+    --radius: 0.25rem;
+
+    --bull: 142 90% 50%;
+    --bear: 0 90% 58%;
+    --grid: 220 14% 14%;
+    --warning: 42 100% 55%;
+
+    --gradient-bull: linear-gradient(180deg, hsl(142 90% 50% / 0.25), transparent);
+    --gradient-panel: linear-gradient(180deg, hsl(220 16% 10%), hsl(220 18% 7%));
+    --shadow-glow: 0 0 24px hsl(142 90% 50% / 0.25);
+    --shadow-panel: 0 1px 0 hsl(220 14% 18%) inset, 0 8px 24px hsl(0 0% 0% / 0.5);
+
+    --sidebar-background: 220 18% 5%;
+    --sidebar-foreground: 150 20% 80%;
+    --sidebar-primary: 142 90% 50%;
+    --sidebar-primary-foreground: 220 30% 6%;
+    --sidebar-accent: 220 14% 12%;
+    --sidebar-accent-foreground: 150 30% 92%;
+    --sidebar-border: 220 14% 14%;
+    --sidebar-ring: 142 90% 50%;
+  }
+
+  .dark { color-scheme: dark; }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "ss01", "cv11";
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    background-image:
+      radial-gradient(circle at 0% 0%, hsl(142 90% 50% / 0.03), transparent 50%),
+      radial-gradient(circle at 100% 0%, hsl(168 90% 45% / 0.03), transparent 50%),
+      radial-gradient(circle at 50% 100%, hsl(220 30% 10% / 0.05), transparent 50%);
+    background-attachment: fixed;
+  }
+  h1,h2,h3,h4 { font-family: 'JetBrains Mono', monospace; letter-spacing: -0.02em; }
+}
+
+@layer components {
+  .panel {
+    @apply bg-card/80 border border-border rounded-md backdrop-blur-md;
+    background: var(--gradient-panel);
+    box-shadow: var(--shadow-panel);
+  }
+  .glass {
+    @apply bg-white/5 border border-white/10 backdrop-blur-xl;
+  }
+  .stat-tile {
+    @apply panel p-3 transition-all cursor-pointer hover:border-primary/60 hover:shadow-[0_0_0_1px_hsl(var(--primary)/0.4)];
+  }
+  .ticker {
+    @apply font-mono tabular-nums tracking-tight;
+  }
+  .glow-text { text-shadow: 0 0 12px hsl(var(--primary) / 0.6); }
+  .scan-line::after {
+    content: '';
+    position: absolute; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent 0 2px, hsl(0 0% 100% / 0.012) 2px 3px);
+    pointer-events: none;
+  }
+  .mask-gradient-to-b {
+    mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "QuantTerm Pro",
+  "description": "Plataforma avançada de trading automatizado para Binance (Spot + Futuros USDT-M), com backtesting realístico sobre klines, robôs Spot/Futuros e gestão de risco profissional.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
