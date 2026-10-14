@@ -128,8 +128,8 @@ function FuturesChart({
     const d = dragRef.current;
     if (!d) return;
     const innerW = Math.max(50, size.w - PAD_L - PAD_R);
-    const plotW = Math.max(50, innerW - Math.max(24, Math.round(innerW * 0.06)));
-    const perCandle = plotW / Math.max(1, viewCount);
+    const targetX = Math.min(size.w * 0.7, innerW - 4);
+    const perCandle = Math.max(0.5, (targetX - PAD_L) / Math.max(1, viewCount - 0.5));
     const delta = Math.round((e.clientX - d.x) / perCandle);
     setEndOffset(Math.min(Math.max(0, d.endOffset + delta), maxOffset));
   };
@@ -157,8 +157,9 @@ function FuturesChart({
 
     const innerW = size.w - PAD_L - PAD_R;
     const innerH = size.h - PAD_T - PAD_B;
-    // Reserva margem à direita para a última vela (em formação) não encostar ao eixo.
-    const plotW = Math.max(50, innerW - Math.max(24, Math.round(innerW * 0.06)));
+    // A última vela (em formação) fica posicionada a ~70% da largura, deixando
+    // espaço livre à direita para a ver com folga.
+    const targetX = Math.min(size.w * 0.7, innerW - 4);
     if (view.length === 0) {
       ctx.fillStyle = "hsl(150 8% 45%)";
       ctx.font = "12px JetBrains Mono, monospace";
@@ -172,7 +173,8 @@ function FuturesChart({
     const vLo = lo - pad;
     const vHi = hi + pad;
     const yOf = (p: number) => PAD_T + (1 - (p - vLo) / (vHi - vLo)) * innerH;
-    const cw = plotW / view.length;
+    // Largura por vela calculada para a última vela cair a ~70% da largura.
+    const cw = Math.max(0.5, (targetX - PAD_L) / Math.max(1, view.length - 0.5));
     const xOf = (i: number) => PAD_L + i * cw + cw / 2;
 
     // Grelha
