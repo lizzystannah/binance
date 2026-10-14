@@ -60,6 +60,20 @@ const PAD_R = 78;
 const PAD_T = 14;
 const PAD_B = 22;
 
+/**
+ * Posição X do centro da última vela visível.
+ * - No extremo direito (offset 0, velas mais recentes) fica a ~70% da largura,
+ *   deixando espaço para ver a vela em formação.
+ * - Ao recuar no histórico, o espaço à direita desaparece e as velas passam a
+ *   ocupar toda a largura (a última toca o eixo), permitindo alinhar velas antigas.
+ */
+function lastCandleX(canvasW: number, endOffset: number): number {
+  const innerW = Math.max(50, canvasW - PAD_L - PAD_R);
+  const t = Math.min(1, Math.max(0, endOffset / 8));
+  const x0 = Math.min(canvasW * 0.7, innerW - 4);
+  return x0 + Math.max(0, innerW - x0) * t;
+}
+
 // ─── Gráfico de velas com zoom (scroll) e arrasto (pan), preenche o container ───
 function FuturesChart({
   klines,
@@ -73,7 +87,7 @@ function FuturesChart({
   const [size, setSize] = useState({ w: 800, h: 420 });
   const [viewCount, setViewCount] = useState(120);
   const [endOffset, setEndOffset] = useState(0);
-  const dragRef = useRef<{ x: number; endOffset: number } | null>(null);
+    const dragRef = useRef<{ x: number; endOffset: number } | null>(null);
 
   const total = klines.length;
   const maxOffset = Math.max(0, total - viewCount);
@@ -127,8 +141,7 @@ function FuturesChart({
   const onPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d) return;
-    const innerW = Math.max(50, size.w - PAD_L - PAD_R);
-    const targetX = Math.min(size.w * 0.7, innerW - 4);
+    const targetX = lastCandleX(size.w, d.endOffset);
     const perCandle = Math.max(0.5, (targetX - PAD_L) / Math.max(1, viewCount - 0.5));
     const delta = Math.round((e.clientX - d.x) / perCandle);
     setEndOffset(Math.min(Math.max(0, d.endOffset + delta), maxOffset));
@@ -157,9 +170,8 @@ function FuturesChart({
 
     const innerW = size.w - PAD_L - PAD_R;
     const innerH = size.h - PAD_T - PAD_B;
-    // A última vela (em formação) fica posicionada a ~70% da largura, deixando
-    // espaço livre à direita para a ver com folga.
-    const targetX = Math.min(size.w * 0.7, innerW - 4);
+    // Posição da última vela: ~70% no presente, até ao eixo ao recuar no histórico.
+    const targetX = lastCandleX(size.w, endOffset);
     if (view.length === 0) {
       ctx.fillStyle = "hsl(150 8% 45%)";
       ctx.font = "12px JetBrains Mono, monospace";
