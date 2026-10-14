@@ -1,7 +1,7 @@
 // ─── PÁGINA DE TRADING — Binance Crypto Futuros USDT-M (100% Binance) ───
 // Perpétuos USDT-M apenas: LONG/SHORT, alavancagem 1–125x, isolated/cross,
 // TP/SL %, trailing stop, reduce-only. Conta paper isolada (cryptoFutures.ts).
-// Dados Binance Futures (fapi) com fallback spot + atualização em tempo real.
+// Gráfico com ferramentas de desenho (linhas) e indicadores (EMA/BOLL/VOL/RSI/MACD).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
@@ -15,9 +15,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ArrowDown,
   ArrowUp,
+  Eraser,
   Maximize2,
+  Minus,
+  MousePointer2,
+  MoveVertical,
   PanelLeftClose,
   PanelLeftOpen,
+  PenLine,
   RefreshCw,
   Search,
   Trash2,
@@ -25,6 +30,8 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { bollinger, ema, macd, rsi } from "@/lib/indicators";
+import { cn } from "@/lib/utils";
 import {
   FUTURES_INTERVALS,
   FUTURES_TRADING_SYMBOLS,
@@ -54,18 +61,36 @@ import {
 import { CRYPTO_FEE_RATE as SPOT_PAPER_FEE } from "@/lib/cryptoPaper";
 
 type EntryLine = { price: number; color: string; label: string };
+type Tool = "cursor" | "trend" | "hline" | "vline" | "erase";
+interface Drawing {
+  id: string;
+  type: "trend" | "hline" | "vline";
+  idx1: number;
+  price1: number;
+  idx2: number;
+  price2: number;
+  color: string;
+}
+interface IndFlags {
+  ema: boolean;
+  boll: boolean;
+  vol: boolean;
+  rsi: boolean;
+  macd: boolean;
+}
 
 const PAD_L = 8;
 const PAD_R = 78;
 const PAD_T = 14;
 const PAD_B = 22;
 
+const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
 /**
  * Posição X do centro da última vela visível.
- * - No extremo direito (offset 0, velas mais recentes) fica a ~70% da largura,
- *   deixando espaço para ver a vela em formação.
+ * - No extremo direito (offset 0, velas mais recentes) fica a ~70% da largura.
  * - Ao recuar no histórico, o espaço à direita desaparece e as velas passam a
- *   ocupar toda a largura (a última toca o eixo), permitindo alinhar velas antigas.
+ *   ocupar toda a largura (a última toca o eixo).
  */
 function lastCandleX(canvasW: number, endOffset: number): number {
   const innerW = Math.max(50, canvasW - PAD_L - PAD_R);
@@ -74,23 +99,82 @@ function lastCandleX(canvasW: number, endOffset: number): number {
   return x0 + Math.max(0, innerW - x0) * t;
 }
 
-// ─── Gráfico de velas com zoom (scroll) e arrasto (pan), preenche o container ───
-function FuturesChart({
-  klines,
-  entryLines,
+function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - x1) * dx + (py - y1) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+function ToolButton({
+  active,
+  onClick,
+  title,
+  children,
 }: {
-  klines: BinanceKline[];
-  entryLines: EntryLine[];
+  active?: boolean;
+  onClick: () => void;
+  title: string;
+  children: React.ReactNode;
 }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={cn(
+        "px-1.5 py-0.5 rounded border text-[10px] font-bold flex items-center gap-1 transition-colors",
+        active ? "bg-primary/20 border-primary text-primary" : "border-border text-muted-foreground hover:text-foreground"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ─── Gráfico: zoom/pan + ferramentas de desenho + indicadores ───
+function FuturesChart({ klines, entryLines }: { klines: BinanceKline[]; entryLines: EntryLine[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 420 });
   const [viewCount, setViewCount] = useState(120);
   const [endOffset, setEndOffset] = useState(0);
-    const dragRef = useRef<{ x: number; endOffset: number } | null>(null);
+  const [tool, setTool] = useState<Tool>("cursor");
+  const [drawings, setDrawings] = useState<Drawing[]>([]);
+  const [pending, setPending] = useState<{ idx: number; price: number } | null>(null);
+  const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
+  const [drawColor, setDrawColor] = useState("#38bdf8");
+  const [ind, setInd] = useState<IndFlags>({ ema: true, boll: false, vol: true, rsi: false, macd: false });
+
+  const dragRef = useRef<{ x: number; endOffset: number } | null>(null);
+  const pendingRef = useRef<{ idx: number; price: number } | null>(null);
+  const layoutRef = useRef<null | {
+    start: number;
+    cw: number;
+    vLo: number;
+    vHi: number;
+    mainTop: number;
+    mainH: number;
+    innerW: number;
+    yOf: (p: number) => number;
+    idxToX: (i: number) => number;
+  }>(null);
 
   const total = klines.length;
   const maxOffset = Math.max(0, total - viewCount);
+  const closes = useMemo(() => klines.map((k) => k.c), [klines]);
+
+  const series = useMemo(
+    () => ({
+      ema20: ind.ema ? ema(closes, 20) : null,
+      ema50: ind.ema ? ema(closes, 50) : null,
+      boll: ind.boll ? bollinger(closes, 20, 2) : null,
+      rsi: ind.rsi ? rsi(closes, 14) : null,
+      macd: ind.macd ? macd(closes, 12, 26, 9) : null,
+    }),
+    [closes, ind]
+  );
 
   const view = useMemo(() => {
     const end = total - endOffset;
@@ -98,13 +182,13 @@ function FuturesChart({
     return klines.slice(start, Math.max(start, end));
   }, [klines, endOffset, viewCount, total]);
 
-  // Medir container (responsivo)
+  // Medir container
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
     const measure = () => {
       const r = el.getBoundingClientRect();
-      setSize({ w: Math.max(320, Math.floor(r.width)), h: Math.max(260, Math.floor(r.height)) });
+      setSize({ w: Math.max(320, Math.floor(r.width)), h: Math.max(240, Math.floor(r.height)) });
     };
     measure();
     const obs = new ResizeObserver(measure);
@@ -112,12 +196,12 @@ function FuturesChart({
     return () => obs.disconnect();
   }, []);
 
-  // Limitar offset quando muda o número de velas / zoom
+  // Limitar offset
   useEffect(() => {
     setEndOffset((o) => Math.min(Math.max(0, o), Math.max(0, total - viewCount)));
   }, [total, viewCount]);
 
-  // Zoom com a roda do rato
+  // Zoom com a roda
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -133,26 +217,92 @@ function FuturesChart({
     return () => el.removeEventListener("wheel", onWheel);
   }, [total]);
 
-  // Arrastar para navegar (pan)
+  const rectXY = (e: React.PointerEvent) => {
+    const r = wrapRef.current?.getBoundingClientRect();
+    return r ? { x: e.clientX - r.left, y: e.clientY - r.top } : { x: 0, y: 0 };
+  };
+  const toData = (x: number, y: number) => {
+    const L = layoutRef.current;
+    if (!L) return null;
+    const idx = L.start + (x - PAD_L - L.cw / 2) / L.cw;
+    const frac = (y - L.mainTop) / L.mainH;
+    return { idx, price: L.vHi - frac * (L.vHi - L.vLo) };
+  };
+
+  const eraseAt = (x: number, y: number) => {
+    const L = layoutRef.current;
+    if (!L) return;
+    let best = -1;
+    let bestD = 10;
+    drawings.forEach((d, i) => {
+      let dist = Infinity;
+      if (d.type === "hline") dist = Math.abs(y - L.yOf(d.price1));
+      else if (d.type === "vline") dist = Math.abs(x - L.idxToX(d.idx1));
+      else dist = distToSegment(x, y, L.idxToX(d.idx1), L.yOf(d.price1), L.idxToX(d.idx2), L.yOf(d.price2));
+      if (dist < bestD) {
+        bestD = dist;
+        best = i;
+      }
+    });
+    if (best >= 0) setDrawings((ds) => ds.filter((_, i) => i !== best));
+  };
+
   const onPointerDown = (e: React.PointerEvent) => {
-    dragRef.current = { x: e.clientX, endOffset };
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-  };
-  const onPointerMove = (e: React.PointerEvent) => {
-    const d = dragRef.current;
+    const { x, y } = rectXY(e);
+    if (tool === "cursor") {
+      dragRef.current = { x: e.clientX, endOffset };
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      return;
+    }
+    const d = toData(x, y);
     if (!d) return;
-    const targetX = lastCandleX(size.w, d.endOffset);
-    const perCandle = Math.max(0.5, (targetX - PAD_L) / Math.max(1, viewCount - 0.5));
-    const delta = Math.round((e.clientX - d.x) / perCandle);
-    setEndOffset(Math.min(Math.max(0, d.endOffset + delta), maxOffset));
+    if (tool === "erase") {
+      eraseAt(x, y);
+      return;
+    }
+    if (tool === "hline") {
+      setDrawings((ds) => [...ds, { id: uid(), type: "hline", idx1: d.idx, price1: d.price, idx2: d.idx, price2: d.price, color: drawColor }]);
+      return;
+    }
+    if (tool === "vline") {
+      setDrawings((ds) => [...ds, { id: uid(), type: "vline", idx1: d.idx, price1: d.price, idx2: d.idx, price2: d.price, color: drawColor }]);
+      return;
+    }
+    if (tool === "trend") {
+      if (!pendingRef.current) {
+        pendingRef.current = d;
+        setPending(d);
+      } else {
+        const p = pendingRef.current;
+        setDrawings((ds) => [...ds, { id: uid(), type: "trend", idx1: p.idx, price1: p.price, idx2: d.idx, price2: d.price, color: drawColor }]);
+        pendingRef.current = null;
+        setPending(null);
+      }
+    }
   };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const { x, y } = rectXY(e);
+    setHover({ x, y });
+    if (tool === "cursor" && dragRef.current) {
+      const d = dragRef.current;
+      const targetX = lastCandleX(size.w, d.endOffset);
+      const perCandle = Math.max(0.5, (targetX - PAD_L) / Math.max(1, viewCount - 0.5));
+      const delta = Math.round((e.clientX - d.x) / perCandle);
+      setEndOffset(Math.min(Math.max(0, d.endOffset + delta), maxOffset));
+    }
+  };
+
   const onPointerUp = (e: React.PointerEvent) => {
     dragRef.current = null;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
+
   const resetView = () => {
     setViewCount(120);
     setEndOffset(0);
+    pendingRef.current = null;
+    setPending(null);
   };
 
   useEffect(() => {
@@ -169,42 +319,133 @@ function FuturesChart({
     ctx.clearRect(0, 0, size.w, size.h);
 
     const innerW = size.w - PAD_L - PAD_R;
-    const innerH = size.h - PAD_T - PAD_B;
-    // Posição da última vela: ~70% no presente, até ao eixo ao recuar no histórico.
-    const targetX = lastCandleX(size.w, endOffset);
+    const H = size.h - PAD_T - PAD_B;
+    const subKeys: Array<"vol" | "rsi" | "macd"> = [];
+    if (ind.vol) subKeys.push("vol");
+    if (ind.rsi) subKeys.push("rsi");
+    if (ind.macd) subKeys.push("macd");
+    const gap = 8;
+    const subH = subKeys.length ? Math.max(44, Math.min(96, Math.round((H - 40) * 0.16))) : 0;
+    const mainH = Math.max(80, H - subKeys.length * (subH + gap));
+    const mainTop = PAD_T;
+    const mainBottom = PAD_T + mainH;
+
     if (view.length === 0) {
       ctx.fillStyle = "hsl(150 8% 45%)";
       ctx.font = "12px JetBrains Mono, monospace";
       ctx.fillText("A carregar velas Binance Futures…", PAD_L + 12, PAD_T + 24);
+      layoutRef.current = null;
       return;
     }
-    const lo = Math.min(...view.map((c) => c.l));
-    const hi = Math.max(...view.map((c) => c.h));
+
+    const start = Math.max(0, total - endOffset - view.length);
+    const endI = start + view.length;
+
+    let lo = Math.min(...view.map((c) => c.l));
+    let hi = Math.max(...view.map((c) => c.h));
+    if (series.boll) {
+      for (let i = start; i < endI; i++) {
+        const u = series.boll.upper[i];
+        const l = series.boll.lower[i];
+        if (u != null) hi = Math.max(hi, u);
+        if (l != null) lo = Math.min(lo, l);
+      }
+    }
+    entryLines.forEach((l) => {
+      if (Number.isFinite(l.price)) {
+        hi = Math.max(hi, l.price);
+        lo = Math.min(lo, l.price);
+      }
+    });
     const range = hi - lo || 1;
-    const pad = range * 0.08;
+    const pad = range * 0.06;
     const vLo = lo - pad;
     const vHi = hi + pad;
-    const yOf = (p: number) => PAD_T + (1 - (p - vLo) / (vHi - vLo)) * innerH;
-    // Largura por vela calculada para a última vela cair a ~70% da largura.
+    const yOf = (p: number) => mainTop + (1 - (p - vLo) / (vHi - vLo)) * mainH;
+
+    const targetX = lastCandleX(size.w, endOffset);
     const cw = Math.max(0.5, (targetX - PAD_L) / Math.max(1, view.length - 0.5));
     const xOf = (i: number) => PAD_L + i * cw + cw / 2;
+    const idxToX = (fullIdx: number) => xOf(fullIdx - start);
 
-    // Grelha
+    layoutRef.current = { start, cw, vLo, vHi, mainTop, mainH, innerW, yOf, idxToX };
+
+    // Painel principal
+    ctx.fillStyle = "#131722";
+    ctx.fillRect(PAD_L, mainTop, innerW, mainH);
+
     ctx.strokeStyle = "hsl(220 14% 14%)";
     ctx.lineWidth = 1;
     ctx.font = "10px JetBrains Mono, monospace";
     ctx.fillStyle = "hsl(150 8% 45%)";
     for (let g = 0; g <= 6; g++) {
-      const y = PAD_T + (innerH / 6) * g;
+      const y = mainTop + (mainH / 6) * g;
       ctx.beginPath();
-      ctx.moveTo(0, y);
+      ctx.moveTo(PAD_L, y);
       ctx.lineTo(innerW, y);
       ctx.stroke();
       const p = vHi - (g / 6) * (vHi - vLo);
       ctx.fillText(formatPrice(p), innerW + 6, y + 3);
     }
 
-    // Linhas de posição (entrada/liq/TP/SL)
+    const drawSeries = (arr: (number | null)[], color: string, width = 1) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      let s = false;
+      for (let i = 0; i < view.length; i++) {
+        const v = arr[start + i];
+        if (v == null) {
+          s = false;
+          continue;
+        }
+        const x = xOf(i);
+        const y = yOf(v);
+        if (!s) {
+          ctx.moveTo(x, y);
+          s = true;
+        } else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    };
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD_L, mainTop, innerW, mainH);
+    ctx.clip();
+
+    // Bollinger
+    if (series.boll) {
+      ctx.beginPath();
+      let s = false;
+      for (let i = 0; i < view.length; i++) {
+        const v = series.boll.upper[start + i];
+        if (v == null) continue;
+        const x = xOf(i);
+        const y = yOf(v);
+        if (!s) {
+          ctx.moveTo(x, y);
+          s = true;
+        } else ctx.lineTo(x, y);
+      }
+      for (let i = view.length - 1; i >= 0; i--) {
+        const v = series.boll.lower[start + i];
+        if (v == null) continue;
+        ctx.lineTo(xOf(i), yOf(v));
+      }
+      ctx.closePath();
+      ctx.fillStyle = "rgba(56,189,248,0.06)";
+      ctx.fill();
+      drawSeries(series.boll.upper, "rgba(56,189,248,0.5)");
+      drawSeries(series.boll.lower, "rgba(56,189,248,0.5)");
+      drawSeries(series.boll.ma, "rgba(56,189,248,0.8)");
+    }
+
+    // EMA
+    if (series.ema20) drawSeries(series.ema20, "#f59e0b", 1.2);
+    if (series.ema50) drawSeries(series.ema50, "#a78bfa", 1.2);
+
+    // Linhas de posição
     entryLines.forEach((l) => {
       if (l.price < vLo || l.price > vHi) return;
       const y = yOf(l.price);
@@ -212,16 +453,16 @@ function FuturesChart({
       ctx.strokeStyle = l.color;
       ctx.lineWidth = 1.25;
       ctx.beginPath();
-      ctx.moveTo(0, y);
+      ctx.moveTo(PAD_L, y);
       ctx.lineTo(innerW, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = l.color;
       const label = `${l.label} ${formatPrice(l.price)}`;
+      ctx.fillStyle = l.color;
       const w = ctx.measureText(label).width + 10;
-      ctx.fillRect(innerW, y - 9, Math.min(w, PAD_R + 40), 18);
+      ctx.fillRect(innerW - w - 4, y - 9, w, 18);
       ctx.fillStyle = "#0a0e14";
-      ctx.fillText(label, innerW + 4, y + 4);
+      ctx.fillText(label, innerW - w + 1, y + 4);
     });
 
     // Velas
@@ -239,50 +480,260 @@ function FuturesChart({
       ctx.fillRect(x - Math.max(1, cw * 0.32), Math.min(yo, yc), Math.max(2, cw * 0.64), Math.max(1, Math.abs(yc - yo)));
     });
 
-    // Última cotação
-    const last = view[view.length - 1];
-    const ly = yOf(last.c);
+    // Desenhos
+    drawings.forEach((d) => {
+      ctx.strokeStyle = d.color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      if (d.type === "hline") {
+        const y = yOf(d.price1);
+        ctx.beginPath();
+        ctx.moveTo(PAD_L, y);
+        ctx.lineTo(innerW, y);
+        ctx.stroke();
+        const label = formatPrice(d.price1);
+        ctx.fillStyle = d.color;
+        const w = ctx.measureText(label).width + 8;
+        ctx.fillRect(innerW - w - 4, y - 8, w, 16);
+        ctx.fillStyle = "#0a0e14";
+        ctx.fillText(label, innerW - w + 1, y + 3);
+      } else if (d.type === "vline") {
+        const x = idxToX(d.idx1);
+        if (x >= PAD_L - 2 && x <= innerW + 2) {
+          ctx.beginPath();
+          ctx.moveTo(x, mainTop);
+          ctx.lineTo(x, mainBottom);
+          ctx.stroke();
+        }
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(idxToX(d.idx1), yOf(d.price1));
+        ctx.lineTo(idxToX(d.idx2), yOf(d.price2));
+        ctx.stroke();
+      }
+    });
+
+    // Pré-visualização do desenho pendente (linha de tendência)
+    if (pending && hover) {
+      const hd = toData(hover.x, hover.y);
+      if (hd) {
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = drawColor;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(idxToX(pending.idx), yOf(pending.price));
+        ctx.lineTo(idxToX(hd.idx), yOf(hd.price));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    ctx.restore();
+
+    // Última cotação + etiqueta no eixo
+    const lastCandle = view[view.length - 1];
+    const ly = yOf(lastCandle.c);
     ctx.setLineDash([3, 3]);
     ctx.strokeStyle = "rgba(255,255,255,0.35)";
     ctx.beginPath();
-    ctx.moveTo(0, ly);
+    ctx.moveTo(PAD_L, ly);
     ctx.lineTo(innerW, ly);
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = last.c >= last.o ? "#22c55e" : "#ef4444";
+    ctx.fillStyle = lastCandle.c >= lastCandle.o ? "#22c55e" : "#ef4444";
     ctx.fillRect(innerW, ly - 9, PAD_R, 18);
     ctx.fillStyle = "#fff";
     ctx.font = "bold 10px JetBrains Mono, monospace";
-    ctx.fillText(formatPrice(last.c), innerW + 5, ly + 4);
-  }, [size, view, entryLines]);
+    ctx.fillText(formatPrice(lastCandle.c), innerW + 5, ly + 4);
+
+    // Sub-painéis: volume, RSI, MACD
+    let paneTop = mainBottom + gap;
+    for (const key of subKeys) {
+      ctx.fillStyle = "rgba(255,255,255,0.02)";
+      ctx.fillRect(PAD_L, paneTop, innerW, subH);
+      ctx.strokeStyle = "hsl(220 14% 18%)";
+      ctx.strokeRect(PAD_L, paneTop, innerW, subH);
+      ctx.fillStyle = "hsl(150 8% 55%)";
+      ctx.font = "9px JetBrains Mono, monospace";
+      ctx.fillText(key.toUpperCase(), PAD_L + 4, paneTop + 10);
+
+      if (key === "vol") {
+        const maxV = Math.max(1, ...view.map((c) => c.v));
+        for (let i = 0; i < view.length; i++) {
+          const c = view[i];
+          const h = (c.v / maxV) * (subH - 14);
+          const x = xOf(i);
+          ctx.fillStyle = c.c >= c.o ? "rgba(34,197,94,0.6)" : "rgba(239,68,68,0.6)";
+          ctx.fillRect(x - Math.max(1, cw * 0.3), paneTop + subH - h - 4, Math.max(1, cw * 0.6), h);
+        }
+      } else if (key === "rsi" && series.rsi) {
+        const yR = (v: number) => paneTop + 4 + (1 - v / 100) * (subH - 10);
+        [30, 50, 70].forEach((lvl) => {
+          ctx.strokeStyle = "hsl(220 14% 22%)";
+          ctx.beginPath();
+          ctx.moveTo(PAD_L, yR(lvl));
+          ctx.lineTo(innerW, yR(lvl));
+          ctx.stroke();
+        });
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        let s = false;
+        for (let i = 0; i < view.length; i++) {
+          const v = series.rsi[start + i];
+          if (v == null) {
+            s = false;
+            continue;
+          }
+          const x = xOf(i);
+          const y = yR(v);
+          if (!s) {
+            ctx.moveTo(x, y);
+            s = true;
+          } else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      } else if (key === "macd" && series.macd) {
+        const vals: number[] = [];
+        for (let i = start; i < endI; i++) {
+          const m = series.macd.macd[i];
+          const sg = series.macd.signal[i];
+          const h = series.macd.histogram[i];
+          if (m != null) vals.push(m);
+          if (sg != null) vals.push(sg);
+          if (h != null) vals.push(h);
+        }
+        const mx = Math.max(1e-9, ...vals.map((v) => Math.abs(v)));
+        const yM = (v: number) => paneTop + subH / 2 - (v / mx) * (subH / 2 - 8);
+        ctx.strokeStyle = "hsl(220 14% 22%)";
+        ctx.beginPath();
+        ctx.moveTo(PAD_L, yM(0));
+        ctx.lineTo(innerW, yM(0));
+        ctx.stroke();
+        for (let i = 0; i < view.length; i++) {
+          const h = series.macd.histogram[start + i];
+          if (h == null) continue;
+          const x = xOf(i);
+          ctx.fillStyle = h >= 0 ? "rgba(34,197,94,0.55)" : "rgba(239,68,68,0.55)";
+          const y0 = yM(0);
+          const y1 = yM(h);
+          ctx.fillRect(x - Math.max(1, cw * 0.3), Math.min(y0, y1), Math.max(1, cw * 0.6), Math.abs(y1 - y0));
+        }
+        const line = (arr: (number | null)[], color: string) => {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          let s = false;
+          for (let i = 0; i < view.length; i++) {
+            const v = arr[start + i];
+            if (v == null) {
+              s = false;
+              continue;
+            }
+            const x = xOf(i);
+            const y = yM(v);
+            if (!s) {
+              ctx.moveTo(x, y);
+              s = true;
+            } else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        };
+        line(series.macd.macd, "#38bdf8");
+        line(series.macd.signal, "#f59e0b");
+      }
+
+      paneTop += subH + gap;
+    }
+
+    // Crosshair
+    if (hover && hover.x >= PAD_L && hover.x <= innerW && hover.y >= mainTop && hover.y <= mainBottom) {
+      const price = toData(hover.x, hover.y)?.price ?? null;
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(hover.x, mainTop);
+      ctx.lineTo(hover.x, mainBottom);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, hover.y);
+      ctx.lineTo(innerW, hover.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (price != null) {
+        ctx.fillStyle = "#2a2e39";
+        ctx.fillRect(innerW, hover.y - 9, PAD_R, 18);
+        ctx.fillStyle = "#fff";
+        ctx.font = "10px JetBrains Mono, monospace";
+        ctx.fillText(formatPrice(price), innerW + 5, hover.y + 4);
+      }
+    }
+  }, [size, view, entryLines, series, ind, endOffset, drawings, pending, hover, total, drawColor]);
 
   return (
-    <div
-      ref={wrapRef}
-      className="w-full h-full min-h-[260px] bg-[#131722] rounded-sm overflow-hidden relative cursor-grab active:cursor-grabbing select-none touch-none"
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerLeave={onPointerUp}
-      onDoubleClick={resetView}
-    >
-      <canvas ref={canvasRef} />
-      <div className="absolute top-2 left-2 flex items-center gap-2 text-[9px] font-mono text-white/45 uppercase tracking-widest pointer-events-none">
-        <span>Binance Futures · tempo real</span>
-        <span className="text-white/25">·</span>
-        <span>{view.length} velas</span>
+    <div className="w-full h-full flex flex-col">
+      {/* Barra de ferramentas */}
+      <div className="flex flex-wrap items-center gap-1 px-1 pb-1 text-[10px] shrink-0">
+        <ToolButton active={tool === "cursor"} onClick={() => { setTool("cursor"); pendingRef.current = null; setPending(null); }} title="Cursor / mover">
+          <MousePointer2 className="h-3 w-3" />
+        </ToolButton>
+        <ToolButton active={tool === "trend"} onClick={() => setTool("trend")} title="Linha de tendência (2 cliques)">
+          <PenLine className="h-3 w-3" /> Linha
+        </ToolButton>
+        <ToolButton active={tool === "hline"} onClick={() => setTool("hline")} title="Linha horizontal">
+          <Minus className="h-3 w-3" />
+        </ToolButton>
+        <ToolButton active={tool === "vline"} onClick={() => setTool("vline")} title="Linha vertical">
+          <MoveVertical className="h-3 w-3" />
+        </ToolButton>
+        <ToolButton active={tool === "erase"} onClick={() => setTool("erase")} title="Apagar desenho">
+          <Eraser className="h-3 w-3" />
+        </ToolButton>
+        <input
+          type="color"
+          value={drawColor}
+          onChange={(e) => setDrawColor(e.target.value)}
+          title="Cor do desenho"
+          className="h-5 w-7 bg-transparent border border-border rounded cursor-pointer"
+        />
+        <ToolButton onClick={() => setDrawings([])} title="Limpar desenhos">
+          <Trash2 className="h-3 w-3" />
+        </ToolButton>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <ToolButton active={ind.ema} onClick={() => setInd((s) => ({ ...s, ema: !s.ema }))} title="EMA 20 / 50">EMA</ToolButton>
+        <ToolButton active={ind.boll} onClick={() => setInd((s) => ({ ...s, boll: !s.boll }))} title="Bollinger 20,2">BOLL</ToolButton>
+        <ToolButton active={ind.vol} onClick={() => setInd((s) => ({ ...s, vol: !s.vol }))} title="Volume">VOL</ToolButton>
+        <ToolButton active={ind.rsi} onClick={() => setInd((s) => ({ ...s, rsi: !s.rsi }))} title="RSI 14">RSI</ToolButton>
+        <ToolButton active={ind.macd} onClick={() => setInd((s) => ({ ...s, macd: !s.macd }))} title="MACD 12/26/9">MACD</ToolButton>
+        <span className="ml-auto" />
+        <ToolButton onClick={resetView} title="Repor vista (duplo-clique)">
+          <Maximize2 className="h-3 w-3" /> reset
+        </ToolButton>
       </div>
-      <button
-        onClick={resetView}
-        onPointerDown={(e) => e.stopPropagation()}
-        className="absolute top-2 right-2 flex items-center gap-1 text-[9px] font-mono text-white/50 hover:text-white px-1.5 py-0.5 rounded border border-white/10 bg-black/30"
-        title="Repor zoom (duplo-clique)"
+
+      <div
+        ref={wrapRef}
+        className={cn(
+          "flex-1 min-h-0 bg-[#131722] rounded-sm overflow-hidden relative select-none touch-none",
+          tool === "cursor" ? "cursor-grab active:cursor-grabbing" : "cursor-crosshair"
+        )}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={() => { dragRef.current = null; setHover(null); }}
+        onDoubleClick={() => { if (tool === "cursor") resetView(); }}
       >
-        <Maximize2 className="h-3 w-3" /> reset
-      </button>
-      <span className="absolute bottom-2 left-2 text-[9px] font-mono text-white/35 pointer-events-none">
-        scroll = zoom · arrastar = mover
-      </span>
+        <canvas ref={canvasRef} />
+        <div className="absolute top-2 left-2 flex items-center gap-2 text-[9px] font-mono text-white/45 uppercase tracking-widest pointer-events-none">
+          <span>Binance Futures · tempo real</span>
+          <span className="text-white/25">·</span>
+          <span>{view.length} velas</span>
+          {drawings.length > 0 && <><span className="text-white/25">·</span><span>{drawings.length} desenhos</span></>}
+        </div>
+        <span className="absolute bottom-2 left-2 text-[9px] font-mono text-white/35 pointer-events-none">
+          scroll = zoom · arrastar = mover {tool !== "cursor" ? "· clica para desenhar" : ""}
+        </span>
+      </div>
     </div>
   );
 }
@@ -367,7 +818,7 @@ export default function Trading() {
     return () => clearInterval(id);
   }, [symbol, tf, loadKlines]);
 
-  // ── Tempo real: WebSocket de kline (fstream) — melhora a fluidez quando disponível ──
+  // ── Tempo real: WebSocket de kline (fstream) ──
   useEffect(() => {
     let ws: WebSocket | null = null;
     let closed = false;
@@ -446,7 +897,7 @@ export default function Trading() {
     };
   }, [symbol, tf]);
 
-  // ── Atualização garantida: polling frequente do mark price (mesmo sem WS) ──
+  // ── Atualização garantida: polling frequente do mark price ──
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
