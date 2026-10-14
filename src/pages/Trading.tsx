@@ -128,7 +128,8 @@ function FuturesChart({
     const d = dragRef.current;
     if (!d) return;
     const innerW = Math.max(50, size.w - PAD_L - PAD_R);
-    const perCandle = innerW / Math.max(1, viewCount);
+    const plotW = Math.max(50, innerW - Math.max(24, Math.round(innerW * 0.06)));
+    const perCandle = plotW / Math.max(1, viewCount);
     const delta = Math.round((e.clientX - d.x) / perCandle);
     setEndOffset(Math.min(Math.max(0, d.endOffset + delta), maxOffset));
   };
@@ -156,6 +157,8 @@ function FuturesChart({
 
     const innerW = size.w - PAD_L - PAD_R;
     const innerH = size.h - PAD_T - PAD_B;
+    // Reserva margem à direita para a última vela (em formação) não encostar ao eixo.
+    const plotW = Math.max(50, innerW - Math.max(24, Math.round(innerW * 0.06)));
     if (view.length === 0) {
       ctx.fillStyle = "hsl(150 8% 45%)";
       ctx.font = "12px JetBrains Mono, monospace";
@@ -169,7 +172,7 @@ function FuturesChart({
     const vLo = lo - pad;
     const vHi = hi + pad;
     const yOf = (p: number) => PAD_T + (1 - (p - vLo) / (vHi - vLo)) * innerH;
-    const cw = innerW / view.length;
+    const cw = plotW / view.length;
     const xOf = (i: number) => PAD_L + i * cw + cw / 2;
 
     // Grelha
