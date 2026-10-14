@@ -13,6 +13,7 @@ const Index = lazy(() => import("./pages/Index.tsx"));
 const Strategies = lazy(() => import("./pages/Strategies.tsx"));
 const Robots = lazy(() => import("./pages/Robots.tsx"));
 const Market = lazy(() => import("./pages/Market.tsx"));
+const Trends = lazy(() => import("./pages/Trends.tsx"));
 
 const queryClient = new QueryClient();
 
@@ -32,6 +33,7 @@ const App = () => (
           <Route path="/robots" element={<Robots />} />
           <Route path="/strategies" element={<Strategies />} />
           <Route path="/market" element={<Market />} />
+          <Route path="/trends" element={<Trends />} />
           <Route path="/settings" element={<Settings />} />
           {/* Redirects de compatibilidade (bookmarks/links antigos) */}
           <Route path="/forex" element={<Navigate to="/trading" replace />} />

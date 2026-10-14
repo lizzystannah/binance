@@ -1,5 +1,5 @@
 import { NavLink, useSearchParams } from "react-router-dom";
-import { Activity, Bot, Settings, ArrowUp, ArrowDown, X, History, CandlestickChart, FlaskConical } from "lucide-react";
+import { Activity, Bot, Settings, ArrowUp, ArrowDown, X, History, CandlestickChart, FlaskConical, TrendingUp } from "lucide-react";
 import { cn, getTradingDay } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { useState, useEffect } from "react";
@@ -10,6 +10,7 @@ const links = [
   { to: "/robots", label: "Robôs", icon: Bot, matchTabs: true },
   { to: "/strategies", label: "Estratégias", icon: FlaskConical },
   { to: "/market", label: "Mercado", icon: CandlestickChart },
+  { to: "/trends", label: "Monitorização", icon: TrendingUp },
   { to: "/settings", label: "Configurações", icon: Settings },
 ];
 
