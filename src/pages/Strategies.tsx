@@ -15,17 +15,16 @@ import {
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import {
+  CRYPTO_STRATEGIES,
   STRATEGY_TEMPLATES,
-  listAllStrategies,
+  buildCustomStrategy,
   useActiveStrategy,
   useCustomStrategies,
-  type CryptoStrategy,
   type StrategyDirection,
   type StrategyTemplateId,
 } from "@/lib/cryptoStrategies";
 import { useCryptoRobots, type FuturesDirection } from "@/lib/cryptoRobots";
-import { FUTURES_TRADING_SYMBOLS, fetchFuturesKlines, formatPrice } from "@/lib/binance";
-import { runCryptoBacktest, type CryptoBacktestResult } from "@/lib/cryptoBacktest";
+import { useBacktestMode } from "@/lib/backtestMode";
 
 const DIR_LABEL: Record<StrategyDirection, string> = {
   all: "Todas",
@@ -128,7 +127,7 @@ return null;                                // 4. sem sinal = null`}</pre>
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
               <li><strong>Criar robô:</strong> botão no card — nasce parado, copiando direção, timeframe e stops da estratégia. Ajusta capital, stake, leverage e liga na página Robôs.</li>
               <li><strong>Ligar (Switch):</strong> marca a estratégia como <em>ligada</em> — é com ela que a página de Backtest corre.</li>
-              <li><strong>Backtest:</strong> botão no card — corre já aqui sobre klines reais da Binance (velas fechadas, fill na abertura seguinte, taxas + slippage, SL antes de TP). Sem lookahead. A estratégia fica ligada para a futura página de Backtest.</li>
+              <li><strong>Backtest:</strong> liga a estratégia e abre a página <strong>Trading</strong> em modo backtest. Aí clicas em “Rodar backtest” e o gráfico mostra as entradas/saídas nas velas (setas de entrada, losangos de saída). Corre sobre klines reais da Binance, sem lookahead.</li>
             </ul>
           </section>
         </div>
@@ -259,152 +258,6 @@ function NewStrategyDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   );
 }
 
-function BacktestDialog({ strategy, direction, onOpenChange }: {
-  strategy: CryptoStrategy;
-  direction: StrategyDirection;
-  onOpenChange: (v: boolean) => void;
-}) {
-  const [symbol, setSymbol] = useState("BTCUSDT");
-  const [tf, setTf] = useState(strategy.timeframes?.[0] ?? "15m");
-  const [bars, setBars] = useState("500");
-  const [capital, setCapital] = useState("1000");
-  const [stake, setStake] = useState("100");
-  const [leverage, setLeverage] = useState("5");
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<CryptoBacktestResult | null>(null);
-  const [error, setError] = useState("");
-
-  const run = async () => {
-    setRunning(true);
-    setError("");
-    setResult(null);
-    try {
-      const cap = parseFloat(capital);
-      const st = parseFloat(stake);
-      if (!Number.isFinite(cap) || cap <= 0) throw new Error("Capital tem de ser > 0.");
-      if (!Number.isFinite(st) || st <= 0) throw new Error("Stake tem de ser > 0.");
-      if (st > cap) throw new Error("Stake não pode exceder o capital.");
-      const kl = await fetchFuturesKlines(symbol, tf, parseInt(bars) || 500);
-      const closed = kl.slice(0, -1); // fora a vela em formação
-      if (closed.length < strategy.minCandles + 2) throw new Error("Velas insuficientes para esta estratégia.");
-      const params = Object.fromEntries((strategy.params ?? []).map((p) => [p.key, p.default]));
-      const wrapped: CryptoStrategy = {
-        ...strategy,
-        onSignal: (ctx) => {
-          const sig = strategy.onSignal({ ...ctx, params });
-          if (!sig) return null;
-          // EXIT/FLAT (fechar) nunca são filtrados por direção.
-          if (sig.action !== "LONG" && sig.action !== "SHORT" && sig.action !== "BUY" && sig.action !== "SELL") return sig;
-          const side = sig.action === "SHORT" || sig.action === "SELL" ? "short" : "long";
-          if (side === "long" && direction === "short") return null;
-          if (side === "short" && direction === "long") return null;
-          return sig;
-        },
-      };
-      const res = runCryptoBacktest(closed, wrapped, {
-        capital: cap,
-        stakePerEntry: st,
-        mode: "futures",
-        leverage: Math.min(125, Math.max(1, parseInt(leverage) || 5)),
-        strategyParams: params,
-      });
-      setResult(res);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Falha no backtest.");
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <FlaskConical className="h-4 w-4 text-primary" /> Backtest — {strategy.name}
-          </DialogTitle>
-          <DialogDescription>
-            Klines reais Binance Futures (sem a vela em formação), fill na abertura seguinte,
-            taxas + slippage, SL antes de TP na mesma vela. {direction !== "all" ? `Direção: ${DIR_LABEL[direction]}.` : "Ambos os lados."}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-wrap gap-2 items-end text-xs">
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground">Par</span>
-            <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className="h-8 bg-secondary/50 border border-border rounded px-2 font-mono">
-              {FUTURES_TRADING_SYMBOLS.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground">TF</span>
-            <select value={tf} onChange={(e) => setTf(e.target.value)} className="h-8 bg-secondary/50 border border-border rounded px-2 font-mono">
-              {(strategy.timeframes ?? ["15m"]).map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground">Velas</span>
-            <select value={bars} onChange={(e) => setBars(e.target.value)} className="h-8 bg-secondary/50 border border-border rounded px-2 font-mono">
-              <option value="500">500</option>
-              <option value="1000">1000</option>
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground">Capital $</span>
-            <Input value={capital} onChange={(e) => setCapital(e.target.value)} className="h-8 w-24 font-mono" inputMode="decimal" />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground">Stake $</span>
-            <Input value={stake} onChange={(e) => setStake(e.target.value)} className="h-8 w-20 font-mono" inputMode="decimal" />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground">Lev. x</span>
-            <Input value={leverage} onChange={(e) => setLeverage(e.target.value)} className="h-8 w-16 font-mono" inputMode="numeric" />
-          </label>
-          <Button size="sm" onClick={run} disabled={running} className="h-8 font-bold">
-            {running ? "A correr…" : "Correr backtest"}
-          </Button>
-        </div>
-        {error && <p className="text-xs text-rose-400">{error}</p>}
-        {result && (
-          <div className="flex flex-col gap-2">
-            <div className="grid grid-cols-3 md:grid-cols-6 gap-2 text-center">
-              {[
-                ["Trades", String(result.totalTrades)],
-                ["Win rate", `${result.winRate.toFixed(1)}%`],
-                ["PnL", `${result.pnl >= 0 ? "+" : ""}$${result.pnl.toFixed(2)}`],
-                ["Equity", `$${result.finalEquity.toFixed(2)}`],
-                ["DD máx", `${result.maxDrawdownPct.toFixed(1)}%`],
-                ["Buy&hold", `${result.buyHoldPct >= 0 ? "+" : ""}${result.buyHoldPct.toFixed(1)}%`],
-              ].map(([k, v]) => (
-                <div key={k} className="rounded border border-border/50 bg-background/40 p-2">
-                  <div className="text-[9px] uppercase text-muted-foreground">{k}</div>
-                  <div className="font-mono font-bold text-xs">{v}</div>
-                </div>
-              ))}
-            </div>
-            {result.totalTrades < 30 && (
-              <p className="text-[11px] text-warning">Amostra pequena (&lt;30 trades) — resultado pouco significativo.</p>
-            )}
-            {result.trades.length > 0 && (
-              <div className="rounded border border-border/40 overflow-hidden">
-                <div className="px-2 py-1 text-[10px] uppercase text-muted-foreground font-bold border-b border-border/30">Últimos trades</div>
-                {result.trades.slice(-20).reverse().map((t, i) => (
-                  <div key={`${t.entryIndex}-${i}`} className="flex justify-between px-2 py-1 text-[11px] font-mono border-b border-border/20 last:border-0">
-                    <span className={t.side === "LONG" ? "text-bull" : "text-bear"}>{t.side} {t.leverage}x</span>
-                    <span>${formatPrice(t.entryPrice)} → ${formatPrice(t.exitPrice)}</span>
-                    <span className="text-muted-foreground">{t.reason.replace(/_/g, " ")}</span>
-                    <span className={t.pnl >= 0 ? "text-bull" : "text-bear"}>{t.pnl >= 0 ? "+" : ""}${t.pnl.toFixed(2)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export default function Strategies() {
   const navigate = useNavigate();
   const [tab, setTab] = useState<"all" | "fav">("all");
@@ -412,7 +265,6 @@ export default function Strategies() {
   const [timeframe, setTimeframe] = useState("todas");
   const [docsOpen, setDocsOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
-  const [btId, setBtId] = useState<string | null>(null);
   const [directions, setDirections] = useState<Record<string, StrategyDirection>>({});
   const [favorites, setFavorites] = useState<Record<string, boolean>>(() => {
     try {
@@ -424,6 +276,7 @@ export default function Strategies() {
 
   const createRobot = useCryptoRobots((s) => s.createRobot);
   const activeStrategyId = useActiveStrategy((s) => s.activeStrategyId);
+  const activeDirection = useActiveStrategy((s) => s.direction);
   const setActiveStrategy = useActiveStrategy((s) => s.setActive);
   const customSpecs = useCustomStrategies((s) => s.specs);
   const removeCustom = useCustomStrategies((s) => s.remove);
@@ -437,9 +290,13 @@ export default function Strategies() {
     });
   };
 
-  const dirOf = (id: string): StrategyDirection => directions[id] ?? "all";
+  const dirOf = (id: string): StrategyDirection =>
+    directions[id] ?? (id === activeStrategyId ? activeDirection : "all");
 
-  const all = useMemo(() => listAllStrategies(), [customSpecs]);
+  const all = useMemo(
+    () => [...CRYPTO_STRATEGIES, ...customSpecs.map(buildCustomStrategy)],
+    [customSpecs]
+  );
 
   const list = useMemo(() => {
     const q = search.toLowerCase();
@@ -491,7 +348,9 @@ export default function Strategies() {
 
   const handleBacktest = (strategyId: string) => {
     setActiveStrategy(strategyId, dirOf(strategyId));
-    setBtId(strategyId);
+    useBacktestMode.getState().setEnabled(true);
+    toast.info("Modo backtest ligado. A correr em Trading…");
+    navigate("/trading");
   };
 
   const handleDeleteCustom = (id: string, name: string) => {
@@ -647,11 +506,6 @@ export default function Strategies() {
 
         <DocsDialog open={docsOpen} onOpenChange={setDocsOpen} />
         <NewStrategyDialog open={newOpen} onOpenChange={setNewOpen} />
-        {btId && (() => {
-          const s = all.find((x) => x.id === btId);
-          if (!s) return null;
-          return <BacktestDialog strategy={s} direction={dirOf(s.id)} onOpenChange={(v) => { if (!v) setBtId(null); }} />;
-        })()}
       </div>
     </AppShell>
   );

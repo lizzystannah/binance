@@ -3,13 +3,20 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useStore } from "@/lib/store";
+import { useBacktestMode } from "@/lib/backtestMode";
+import { useActiveStrategy, getCryptoStrategy } from "@/lib/cryptoStrategies";
 import { toast } from "sonner";
 import { Eye, EyeOff, Save, KeyRound, FlaskConical, Crosshair } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 // Binance-only: Configurações de futuros (API, testnet, leverage, margem, risco).
 export default function Settings() {
   const { binanceFutures, setBinanceFutures, tradingMode, setTradingMode } = useStore();
+  const backtestEnabled = useBacktestMode((s) => s.enabled);
+  const setBacktestEnabled = useBacktestMode((s) => s.setEnabled);
+  const activeStrategyId = useActiveStrategy((s) => s.activeStrategyId);
+  const activeStrategy = activeStrategyId ? getCryptoStrategy(activeStrategyId) : undefined;
   const [showKey, setShowKey] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -58,6 +65,34 @@ export default function Settings() {
         </div>
 
         <div className="grid lg:grid-cols-2 gap-3">
+          {/* Backtest */}
+          <div className="panel p-4 space-y-3 lg:col-span-2">
+            <div className="text-xs uppercase text-primary font-bold tracking-wider flex items-center gap-1.5">
+              <FlaskConical className="h-3.5 w-3.5" /> Backtest
+            </div>
+            <div className="flex items-center justify-between p-3 rounded-md bg-secondary/20 border border-border/70">
+              <div>
+                <div className="text-xs font-bold">Ativar modo backtest</div>
+                <div className="text-[10px] text-muted-foreground">
+                  A página <strong>Trading</strong> passa a mostrar o gráfico em modo backtest: corre a
+                  estratégia ligada sobre velas fechadas e desenha as entradas/saídas nas velas.
+                </div>
+              </div>
+              <Switch checked={backtestEnabled} onCheckedChange={setBacktestEnabled} />
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              Estratégia ligada:{" "}
+              {activeStrategy ? (
+                <span className="text-foreground font-mono font-bold">{activeStrategy.name}</span>
+              ) : (
+                <span className="text-warning">nenhuma — liga uma em Estratégias</span>
+              )}
+            </div>
+            <Button size="sm" variant="outline" className="h-8 text-xs" asChild>
+              <Link to="/trading">Ir para Trading <FlaskConical className="h-3.5 w-3.5 ml-1" /></Link>
+            </Button>
+          </div>
+
           {/* Ambiente */}
           <div className="panel p-4 space-y-3">
             <div className="text-xs uppercase text-primary font-bold tracking-wider">Ambiente</div>
