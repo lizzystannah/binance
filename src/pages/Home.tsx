@@ -46,7 +46,7 @@ export default function Home() {
             <span className="text-primary">Trading Algorítmico</span>
           </h1>
           <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-10">
-            Domine os mercados cripto Spot e Futuros na Binance com backtesting realista sobre klines USDT-M e automação inteligente com leverage, TP/SL e gestão de risco.
+            Domine os Futuros USDT-M na Binance com backtesting realista sobre klines reais, robôs com leverage, TP/SL e gestão de risco.
           </p>
           <div className="flex flex-col md:flex-row items-center justify-center gap-4">
             <Link to="/trading">
@@ -54,8 +54,8 @@ export default function Home() {
                 Começar Agora <ArrowRight className="ml-2 h-5 w-5" />
               </Button>
             </Link>
-            <Button size="lg" variant="ghost" className="px-8 py-6 text-lg text-muted-foreground hover:text-white">
-              Ver Documentação
+            <Button size="lg" variant="ghost" className="px-8 py-6 text-lg text-muted-foreground hover:text-white" asChild>
+              <Link to="/strategies">Ver Documentação</Link>
             </Button>
           </div>
         </div>

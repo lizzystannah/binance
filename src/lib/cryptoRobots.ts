@@ -1,7 +1,7 @@
-// ─── Robôs Binance Spot + Futuros ────────────────────────────────────────────
-// Spot: apenas BUY/SELL à vista, sem leverage (1x), sem SHORT.
+// ─── Robôs Binance Futuros USDT-M ────────────────────────────────────────────
 // Futuros USDT-M: LONG/SHORT com leverage, marginMode, funding awareness e hedge.
 // Sem ticks/dígitos/stake de binárias, sem martingale — risco em USDT + %.
+// (Robôs Spot antigos são legado: continuam válidos na store mas ocultos na UI.)
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -18,7 +18,7 @@ export interface CryptoRobot {
   symbol: string; // ex: "BTCUSDT"
   interval: string; // 1m | 5m | 15m | 1h | 4h
   strategyId: string;
-  /** Mercado operado. Default: "spot" (compat com robôs antigos). */
+  /** Mercado operado. Default: "futures". Robôs Spot antigos (legado) continuam válidos. */
   mode: RobotMode;
   /** Direção permitida. Spot: BUY (SELL = fechar). Futuros: LONG/SHORT/BOTH. */
   direction?: FuturesDirection | "BUY";
@@ -65,7 +65,7 @@ export function validateRobotConfig(r: NewCryptoRobot): string[] {
   if (!(LEGACY_INTERVALS as readonly string[]).includes(r.interval))
     errs.push("Timeframe inválido (use 1m/5m/15m/1h/4h).");
   if (!getCryptoStrategy(r.strategyId)) errs.push("Estratégia desconhecida.");
-  const mode: RobotMode = r.mode ?? "spot";
+  const mode: RobotMode = r.mode ?? "futures";
   if (mode !== "spot" && mode !== "futures") errs.push("Modo inválido (spot|futures).");
 
   // Direção por modo
@@ -113,7 +113,7 @@ export function validateRobotConfig(r: NewCryptoRobot): string[] {
 
 /** Normaliza defaults por modo (leverage/margin/funding). */
 export function normalizeRobotDefaults(r: NewCryptoRobot): NewCryptoRobot {
-  const mode = r.mode ?? "spot";
+  const mode = r.mode ?? "futures";
   if (mode === "spot") {
     const { leverage: _l, marginMode: _m, hedge: _h, ...rest } = r as Record<string, unknown>;
     return { ...rest, mode: "spot", direction: (r.direction as FuturesDirection | "BUY" | undefined) ?? "BUY" } as NewCryptoRobot;
@@ -146,7 +146,7 @@ export const useCryptoRobots = create<CryptoRobotsStore>()(
       robots: [],
 
       createRobot: (r) => {
-        const normalized = normalizeRobotDefaults({ mode: "spot", ...r });
+        const normalized = normalizeRobotDefaults({ mode: "futures", ...r });
         const errs = validateRobotConfig(normalized);
         if (errs.length > 0) return { ok: false, reason: errs[0] };
         const id = uid("crobot");
@@ -173,7 +173,7 @@ export const useCryptoRobots = create<CryptoRobotsStore>()(
         if (active) {
           const r = get().robots.find((x) => x.id === id);
           if (!r) return false;
-          const errs = validateRobotConfig({ ...r, mode: r.mode ?? "spot" });
+          const errs = validateRobotConfig({ ...r, mode: r.mode ?? "futures" });
           if (errs.length > 0) {
             set((s) => ({
               robots: s.robots.map((x) =>

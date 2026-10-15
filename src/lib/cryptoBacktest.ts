@@ -1,9 +1,8 @@
-// ─── Backtest Binance Spot + Futuros sobre klines reais ──────────────────────
+// ─── Backtest Binance Futuros USDT-M sobre klines reais ───────────────────────
 // Regras de honestidade:
 // - Sinal calculado APENAS com velas fechadas até t; fill na abertura de t+1.
 // - Intra-vela: se a vela tocar SL e TP, assume-se SL primeiro (conservador).
 // - Taxas por lado + slippage declarados.
-// - Spot: apenas LONG (BUY), sem alavancagem. SELL/EXIT fecha.
 // - Futuros: LONG e SHORT com leverage; PnL × leverage; funding deduzido por
 //   trade quando informado (fundingRatePct por trade ou por vela).
 
@@ -17,12 +16,14 @@ export interface CryptoBacktestOpts {
   stakePerEntry: number;
   feeRate?: number;
   slippageRate?: number;
-  /** Mercado testado. Default "spot" (compat). */
+  /** Mercado testado. Default "futures". */
   mode?: RobotMode;
   /** Alavancagem (futuros). Spot ignora (1x). */
   leverage?: number;
   /** Custo de funding por trade em % do notional (ex: 0.01 = 0.01%). Default 0. */
   fundingRatePct?: number;
+  /** Parâmetros da estratégia (os mesmos de `strategy.params[]`). Vão em `ctx.params`. */
+  strategyParams?: Record<string, number | string>;
 }
 
 export interface CryptoBacktestTrade {
@@ -60,7 +61,7 @@ export function runCryptoBacktest(
 ): CryptoBacktestResult {
   const feeRate = opts.feeRate ?? CRYPTO_FEE_RATE;
   const slip = opts.slippageRate ?? CRYPTO_SLIPPAGE_RATE;
-  const mode: RobotMode = opts.mode ?? "spot";
+  const mode: RobotMode = opts.mode ?? "futures";
   const leverage = mode === "futures" ? Math.min(Math.max(opts.leverage ?? 1, 1), 125) : 1;
   const fundingPct = opts.fundingRatePct ?? 0;
   const empty: CryptoBacktestResult = {
@@ -191,6 +192,7 @@ export function runCryptoBacktest(
             closes: closes.slice(0, i + 1),
             lastClose: closes[i],
             mode,
+            params: opts.strategyParams,
           };
           let sig: ReturnType<CryptoStrategy["onSignal"]> = null;
           try {
@@ -214,6 +216,7 @@ export function runCryptoBacktest(
         closes: closes.slice(0, i + 1),
         lastClose: closes[i],
         mode,
+        params: opts.strategyParams,
       };
       let sig: ReturnType<CryptoStrategy["onSignal"]> = null;
       try {

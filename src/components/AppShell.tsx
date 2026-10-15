@@ -4,7 +4,7 @@ import { cn, getTradingDay } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { useState, useEffect } from "react";
 
-// Binance-only: apenas Trading (Futuros), Robôs (Spot/Futuros), Estratégias, Mercado, Configurações.
+// Binance-only: Trading (Futuros), Ordens, Histórico, Robôs (Futuros), Estratégias, Mercado, Monitorização, Configurações.
 const links = [
   { to: "/trading", label: "Trading (Futuros)", icon: Activity },
   { to: "/orders", label: "Ordens", icon: ArrowLeftRight },

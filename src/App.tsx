@@ -19,7 +19,7 @@ const HistoryPage = lazy(() => import("./pages/History.tsx"));
 
 const queryClient = new QueryClient();
 
-// Binance-only: Trading (Futuros), Robôs (Spot/Futuros via ?tab=), Estratégias, Mercado, Configurações.
+// Binance-only: Trading (Futuros), Ordens, Histórico, Robôs (Futuros), Estratégias, Mercado, Monitorização, Configurações.
 // Rotas legadas Forex (forex, management, stats, operations, pending-test,
 // ai-discovery, robots-performance) foram removidas — redirects abaixo evitam links quebrados.
 const App = () => (

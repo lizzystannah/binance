@@ -1,9 +1,8 @@
-// ─── Estratégias Binance Spot + Futuros ──────────────────────────────────────
-// Sinais genéricos, sem dependência de símbolos de corretora legada (R_*, frx*).
-// Funcionam em qualquer par cripto (BTCUSDT, ETHUSDT, altcoins voláteis).
+// ─── Estratégias Binance Futuros USDT-M ──────────────────────────────────────
+// Sinais LONG/SHORT com leverage, sem dependência de símbolos legados.
+// Funcionam em qualquer par USDT-M (BTCUSDT, ETHUSDT, altcoins voláteis).
 // Timeframes: 1m / 5m / 15m / 1h / 4h. Stops em % ou múltiplo de ATR, com
 // trailing opcional. Volume confirma rompimentos.
-//   Spot:    BUY (abrir LONG à vista) / SELL (fechar) / EXIT — sem leverage.
 //   Futuros: LONG / SHORT / EXIT / FLAT — com leverage + funding awareness.
 
 import { atr, bollinger, ema, macd, rsi } from "@/lib/indicators";
@@ -34,6 +33,8 @@ export interface CryptoContext {
   lastClose: number;
   /** Modo do robô que avalia o sinal (para filtrar ações inválidas). */
   mode?: RobotMode;
+  /** Parâmetros da estratégia (os mesmos de `params[]`). O onSignal DEVE lê-los. */
+  params?: Record<string, number | string>;
   /** Funding rate atual (% por intervalo) — futuros usam para pular entradas. */
   fundingRatePct?: number;
 }
@@ -103,6 +104,18 @@ export interface CryptoStrategy {
 /** Alias legado (compat). */
 export type CryptoSpotStrategy = CryptoStrategy;
 
+/** Lê um parâmetro numérico do ctx (com fallback = valor exibido no catálogo). */
+export function ctxNum(ctx: CryptoContext, key: string, fb: number): number {
+  const v = ctx.params?.[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : fb;
+}
+
+/** Lê um parâmetro texto do ctx (com fallback). */
+export function ctxStr(ctx: CryptoContext, key: string, fb: string): string {
+  const v = ctx.params?.[key];
+  return typeof v === "string" ? v : fb;
+}
+
 // ─── Helpers genéricos ──────────────────────────────────────────────────────
 
 function closesOf(klines: CryptoCandle[]): number[] {
@@ -151,7 +164,7 @@ const trendPullback: CryptoStrategy = {
   minCandles: 60,
   defaults: { stopGainPct: 3, stopLossPct: 1.5 },
   timeframes: ["15m", "1h", "4h"],
-  modes: ["spot", "futures"],
+  modes: ["futures"],
   category: "auto",
   indicators: ["EMA20", "EMA50", "RSI14", "ATR14"],
   params: [
@@ -167,26 +180,30 @@ const trendPullback: CryptoStrategy = {
     const e50 = lastFinite(ema(closes, 50));
     const r = lastFinite(rsi(closes, 14));
     if (e20 === null || e50 === null || r === null) return null;
-    const sl = atrStopPct(ctx.klines, 1.5, 1.0);
-    const tp = sl * 2;
-    if (e20 > e50 && r < 45) {
+    const stopMult = ctxNum(ctx, "stopAtrMult", 1.5);
+    const tpR = ctxNum(ctx, "tpR", 2);
+    const rsiBuyMax = ctxNum(ctx, "rsiBuyMax", 45);
+    const rsiSellMin = ctxNum(ctx, "rsiSellMin", 55);
+    const sl = atrStopPct(ctx.klines, stopMult, 1.0);
+    const tp = sl * tpR;
+    if (e20 > e50 && r < rsiBuyMax) {
       return {
         action: ctx.mode === "futures" ? "LONG" : "BUY",
         stopGainPct: +tp.toFixed(2),
         stopLossPct: +sl.toFixed(2),
         reason: `EMA20>EMA50 em pullback (RSI ${r.toFixed(0)})`,
-        confidence: Math.min(90, Math.round(55 + (45 - r))),
-        atrStopMult: 1.5,
+        confidence: Math.min(90, Math.round(55 + (rsiBuyMax - r))),
+        atrStopMult: stopMult,
       };
     }
-    if (ctx.mode === "futures" && e20 < e50 && r > 55) {
+    if (ctx.mode === "futures" && e20 < e50 && r > rsiSellMin) {
       return {
         action: "SHORT",
         stopGainPct: +tp.toFixed(2),
         stopLossPct: +sl.toFixed(2),
         reason: `EMA20<EMA50 em repique (RSI ${r.toFixed(0)})`,
-        confidence: Math.min(90, Math.round(55 + (r - 55))),
-        atrStopMult: 1.5,
+        confidence: Math.min(90, Math.round(55 + (r - rsiSellMin))),
+        atrStopMult: stopMult,
       };
     }
     return null;
@@ -201,7 +218,7 @@ const bollingerBreakout: CryptoStrategy = {
   minCandles: 40,
   defaults: { stopGainPct: 4, stopLossPct: 2, trailingPct: 1.2 },
   timeframes: ["5m", "15m", "1h"],
-  modes: ["spot", "futures"],
+  modes: ["futures"],
   category: "auto",
   indicators: ["Bollinger(20,2)", "Volume 20", "ATR14"],
   params: [
@@ -221,26 +238,29 @@ const bollingerBreakout: CryptoStrategy = {
     if (avg === null) return null;
     const lastVol = ctx.klines[ctx.klines.length - 1].v;
     const mult = lastVol / avg;
-    const sl = atrStopPct(ctx.klines, 1.2, 0.8);
-    if (ctx.lastClose > upper && mult > 1.5) {
+    const volMin = ctxNum(ctx, "volumeMult", 1.5);
+    const stopMult = ctxNum(ctx, "stopAtrMult", 1.2);
+    const trail = ctxNum(ctx, "trailingPct", 1.2);
+    const sl = atrStopPct(ctx.klines, stopMult, 0.8);
+    if (ctx.lastClose > upper && mult > volMin) {
       return {
         action: ctx.mode === "futures" ? "LONG" : "BUY",
         stopGainPct: +(sl * 2).toFixed(2),
         stopLossPct: +sl.toFixed(2),
         reason: `Rompimento banda sup. com volume ${mult.toFixed(1)}×`,
         confidence: 70,
-        trailingPct: 1.2,
+        trailingPct: trail,
         volumeMult: +mult.toFixed(2),
       };
     }
-    if (ctx.mode === "futures" && ctx.lastClose < lower && mult > 1.5) {
+    if (ctx.mode === "futures" && ctx.lastClose < lower && mult > volMin) {
       return {
         action: "SHORT",
         stopGainPct: +(sl * 2).toFixed(2),
         stopLossPct: +sl.toFixed(2),
         reason: `Rompimento banda inf. com volume ${mult.toFixed(1)}×`,
         confidence: 70,
-        trailingPct: 1.2,
+        trailingPct: trail,
         volumeMult: +mult.toFixed(2),
       };
     }
@@ -256,7 +276,7 @@ const rsiMeanReversion: CryptoStrategy = {
   minCandles: 40,
   defaults: { stopGainPct: 2.5, stopLossPct: 1.2 },
   timeframes: ["5m", "15m", "1h"],
-  modes: ["spot", "futures"],
+  modes: ["futures"],
   category: "auto",
   indicators: ["RSI14", "EMA200", "ATR14"],
   params: [
@@ -269,25 +289,28 @@ const rsiMeanReversion: CryptoStrategy = {
     const closes = closesOf(ctx.klines);
     const r = lastFinite(rsi(closes, 14));
     if (r === null) return null;
-    const sl = atrStopPct(ctx.klines, 1.0, 0.6);
-    if (r < 30) {
+    const os = ctxNum(ctx, "rsiOversold", 30);
+    const ob = ctxNum(ctx, "rsiOverbought", 70);
+    const stopMult = ctxNum(ctx, "stopAtrMult", 1.0);
+    const sl = atrStopPct(ctx.klines, stopMult, 0.6);
+    if (r < os) {
       return {
         action: ctx.mode === "futures" ? "LONG" : "BUY",
         stopGainPct: +(sl * 2).toFixed(2),
         stopLossPct: +sl.toFixed(2),
         reason: `RSI oversold (${r.toFixed(0)}) — reversão`,
-        confidence: Math.min(85, Math.round(60 + (30 - r))),
-        atrStopMult: 1.0,
+        confidence: Math.min(85, Math.round(60 + (os - r))),
+        atrStopMult: stopMult,
       };
     }
-    if (ctx.mode === "futures" && r > 70) {
+    if (ctx.mode === "futures" && r > ob) {
       return {
         action: "SHORT",
         stopGainPct: +(sl * 2).toFixed(2),
         stopLossPct: +sl.toFixed(2),
         reason: `RSI overbought (${r.toFixed(0)}) — reversão`,
-        confidence: Math.min(85, Math.round(60 + (r - 70))),
-        atrStopMult: 1.0,
+        confidence: Math.min(85, Math.round(60 + (r - ob))),
+        atrStopMult: stopMult,
       };
     }
     return null;
@@ -302,7 +325,7 @@ const macdEmaTrend: CryptoStrategy = {
   minCandles: 60,
   defaults: { stopGainPct: 3.5, stopLossPct: 1.5, trailingPct: 1.5 },
   timeframes: ["15m", "1h", "4h"],
-  modes: ["spot", "futures"],
+  modes: ["futures"],
   category: "auto",
   indicators: ["MACD(12,26,9)", "EMA50", "Volume 20", "ATR14"],
   params: [
@@ -318,8 +341,11 @@ const macdEmaTrend: CryptoStrategy = {
     const e50 = lastFinite(ema(closes, 50));
     if (hist === null || e50 === null) return null;
     const avg = avgVolume(ctx.klines, 20);
-    const volOk = avg === null ? true : ctx.klines[ctx.klines.length - 1].v >= avg * 1.1;
-    const sl = atrStopPct(ctx.klines, 1.5, 1.0);
+    const requireVol = ctxStr(ctx, "requireVolume", "sim") !== "não";
+    const volOk = !requireVol || avg === null ? true : ctx.klines[ctx.klines.length - 1].v >= avg * 1.1;
+    const stopMult = ctxNum(ctx, "stopAtrMult", 1.5);
+    const trail = ctxNum(ctx, "trailingPct", 1.5);
+    const sl = atrStopPct(ctx.klines, stopMult, 1.0);
     if (hist > 0 && ctx.lastClose > e50 && volOk) {
       const prevHist = m.histogram.length >= 2 ? m.histogram[m.histogram.length - 2] : null;
       const fresh = prevHist !== null && prevHist <= 0; // cruzamento recente = mais confiança
@@ -329,8 +355,8 @@ const macdEmaTrend: CryptoStrategy = {
         stopLossPct: +sl.toFixed(2),
         reason: fresh ? "MACD virou bull + preço > EMA50" : "Momentum bull (MACD>0, > EMA50)",
         confidence: fresh ? 75 : 60,
-        trailingPct: 1.5,
-        atrStopMult: 1.5,
+        trailingPct: trail,
+        atrStopMult: stopMult,
       };
     }
     if (ctx.mode === "futures" && hist < 0 && ctx.lastClose < e50 && volOk) {
@@ -340,8 +366,8 @@ const macdEmaTrend: CryptoStrategy = {
         stopLossPct: +sl.toFixed(2),
         reason: "Momentum bear (MACD<0, < EMA50)",
         confidence: 60,
-        trailingPct: 1.5,
-        atrStopMult: 1.5,
+        trailingPct: trail,
+        atrStopMult: stopMult,
       };
     }
     return null;
@@ -356,7 +382,7 @@ const emaCross: CryptoStrategy = {
   minCandles: 40,
   defaults: { stopGainPct: 2, stopLossPct: 1 },
   timeframes: ["1m", "5m", "15m"],
-  modes: ["spot", "futures"],
+  modes: ["futures"],
   category: "auto",
   indicators: ["EMA9", "EMA21", "ATR14"],
   params: [
@@ -374,25 +400,27 @@ const emaCross: CryptoStrategy = {
     const prev9 = e9[n - 2];
     const prev21 = e21[n - 2];
     if (cur9 == null || cur21 == null || prev9 == null || prev21 == null) return null;
-    const sl = atrStopPct(ctx.klines, 1.0, 0.5);
+    const stopMult = ctxNum(ctx, "stopAtrMult", 1.0);
+    const tpR = ctxNum(ctx, "tpR", 2);
+    const sl = atrStopPct(ctx.klines, stopMult, 0.5);
     if (prev9 <= prev21 && cur9 > cur21) {
       return {
         action: ctx.mode === "futures" ? "LONG" : "BUY",
-        stopGainPct: +(sl * 2).toFixed(2),
+        stopGainPct: +(sl * tpR).toFixed(2),
         stopLossPct: +sl.toFixed(2),
         reason: "EMA9 cruzou acima da EMA21",
         confidence: 62,
-        atrStopMult: 1.0,
+        atrStopMult: stopMult,
       };
     }
     if (ctx.mode === "futures" && prev9 >= prev21 && cur9 < cur21) {
       return {
         action: "SHORT",
-        stopGainPct: +(sl * 2).toFixed(2),
+        stopGainPct: +(sl * tpR).toFixed(2),
         stopLossPct: +sl.toFixed(2),
         reason: "EMA9 cruzou abaixo da EMA21",
         confidence: 62,
-        atrStopMult: 1.0,
+        atrStopMult: stopMult,
       };
     }
     return null;
@@ -407,8 +435,8 @@ const orderblockSmc: CryptoStrategy = {
   minCandles: 40,
   defaults: { stopGainPct: 3, stopLossPct: 1.2 },
   timeframes: ["15m", "1h", "4h"],
-  modes: ["spot", "futures"],
-  category: "semi-auto",
+  modes: ["futures"],
+  category: "auto",
   indicators: ["Swing H/L 20", "FVG proxy", "ATR14"],
   params: [
     { key: "lookback", label: "Lookback swing", type: "number", default: 20, min: 10, max: 50, step: 1 },
@@ -417,13 +445,14 @@ const orderblockSmc: CryptoStrategy = {
   onSignal: (ctx) => {
     const n = ctx.klines.length;
     if (n < 40) return null;
-    const lookback = 20;
+    const lookback = Math.round(ctxNum(ctx, "lookback", 20));
+    const stopMult = ctxNum(ctx, "stopAtrMult", 1.0);
     const window = ctx.klines.slice(n - 1 - lookback, n - 1);
     if (window.length < lookback) return null;
     const swingHigh = Math.max(...window.map((k) => k.h));
     const swingLow = Math.min(...window.map((k) => k.l));
     const last = ctx.klines[n - 1];
-    const sl = atrStopPct(ctx.klines, 1.0, 0.8);
+    const sl = atrStopPct(ctx.klines, stopMult, 0.8);
     // Varredura de mínima + recuperação = absorção compradora
     if (last.l < swingLow && last.c > swingLow && last.c > last.o) {
       return {
@@ -432,7 +461,7 @@ const orderblockSmc: CryptoStrategy = {
         stopLossPct: +sl.toFixed(2),
         reason: "Varredura de mínima + fecho de volta (demanda)",
         confidence: 66,
-        atrStopMult: 1.0,
+        atrStopMult: stopMult,
       };
     }
     if (ctx.mode === "futures" && last.h > swingHigh && last.c < swingHigh && last.c < last.o) {
@@ -442,7 +471,7 @@ const orderblockSmc: CryptoStrategy = {
         stopLossPct: +sl.toFixed(2),
         reason: "Varredura de máxima + fecho de volta (oferta)",
         confidence: 66,
-        atrStopMult: 1.0,
+        atrStopMult: stopMult,
       };
     }
     return null;
@@ -459,7 +488,15 @@ export const CRYPTO_STRATEGIES: CryptoStrategy[] = [
 ];
 
 export function getCryptoStrategy(id: string): CryptoStrategy | undefined {
-  return CRYPTO_STRATEGIES.find((s) => s.id === id);
+  return (
+    CRYPTO_STRATEGIES.find((s) => s.id === id) ?? getCustomStrategy(id)
+  );
+}
+
+/** Catálogo completo: embutidas + personalizadas (criadas na UI). */
+export function listAllStrategies(): CryptoStrategy[] {
+  const custom = useCustomStrategies.getState().specs.map(buildCustomStrategy);
+  return [...CRYPTO_STRATEGIES, ...custom];
 }
 
 /** Ações válidas por modo (Binance). */
@@ -472,7 +509,7 @@ export function validateSpotSignal(
   signal: CryptoSignal | null,
   minCandles: number,
   candleCount: number,
-  mode: RobotMode = "spot"
+  mode: RobotMode = "futures"
 ): { ok: boolean; reason?: string } {
   return validateCryptoSignal(signal, minCandles, candleCount, mode);
 }
@@ -481,7 +518,7 @@ export function validateCryptoSignal(
   signal: CryptoSignal | null,
   minCandles: number,
   candleCount: number,
-  mode: RobotMode = "spot"
+  mode: RobotMode = "futures"
 ): { ok: boolean; reason?: string } {
   if (!signal) return { ok: false, reason: "Sem sinal." };
   if (candleCount < minCandles)
@@ -527,3 +564,245 @@ export const useActiveStrategy = create<ActiveStrategyStore>()(
     { name: "quantterm:active-strategy" }
   )
 );
+
+// ─── Estratégias personalizadas (botão "Nova estratégia") ───────────────────
+// Sem execução de código arbitrário: a personalizada escolhe um TEMPLATE
+// (lógica fixa e auditada) + parâmetros numéricos. O onSignal é gerado a
+// partir do template, por isso funciona em robôs, validação e backtest sem
+// nenhuma alteração nesses motores.
+
+export type StrategyTemplateId = "rsi_reversao" | "ema_cross" | "boll_breakout";
+
+export interface StrategyTemplate {
+  id: StrategyTemplateId;
+  name: string;
+  description: string;
+  params: CryptoStrategyParam[];
+}
+
+export const STRATEGY_TEMPLATES: StrategyTemplate[] = [
+  {
+    id: "rsi_reversao",
+    name: "RSI Reversão",
+    description: "LONG em sobrevenda, SHORT em sobrecompra (futuros).",
+    params: [
+      { key: "rsiLen", label: "Período RSI", type: "number", default: 14, min: 2, max: 50, step: 1 },
+      { key: "oversold", label: "RSI sobrevenda", type: "number", default: 30, min: 10, max: 45, step: 1 },
+      { key: "overbought", label: "RSI sobrecompra", type: "number", default: 70, min: 55, max: 90, step: 1 },
+    ],
+  },
+  {
+    id: "ema_cross",
+    name: "Cruzamento EMA",
+    description: "LONG no cruzamento rápida> lenta, SHORT no inverso.",
+    params: [
+      { key: "fast", label: "EMA rápida", type: "number", default: 9, min: 2, max: 50, step: 1 },
+      { key: "slow", label: "EMA lenta", type: "number", default: 21, min: 5, max: 200, step: 1 },
+    ],
+  },
+  {
+    id: "boll_breakout",
+    name: "Bollinger Breakout",
+    description: "LONG rompendo banda superior com volume, SHORT na inferior.",
+    params: [
+      { key: "bbLen", label: "Período", type: "number", default: 20, min: 10, max: 50, step: 1 },
+      { key: "bbMult", label: "Desvios", type: "number", default: 2, min: 1, max: 3, step: 0.1 },
+      { key: "volumeMult", label: "Volume mín. ×", type: "number", default: 1.5, min: 1, max: 4, step: 0.1 },
+    ],
+  },
+];
+
+export interface CustomStrategySpec {
+  id: string;
+  name: string;
+  description: string;
+  template: StrategyTemplateId;
+  timeframes: string[];
+  params: Record<string, number>;
+  stopGainPct: number;
+  stopLossPct: number;
+  trailingPct?: number;
+  createdAt: number;
+}
+
+export interface NewCustomStrategy {
+  name: string;
+  description?: string;
+  template: StrategyTemplateId;
+  timeframes: string[];
+  params: Record<string, number>;
+  stopGainPct: number;
+  stopLossPct: number;
+  trailingPct?: number;
+}
+
+function numParam(params: Record<string, number>, key: string, fb: number): number {
+  const v = params[key];
+  return Number.isFinite(v) ? (v as number) : fb;
+}
+
+function templateMinCandles(template: StrategyTemplateId, p: Record<string, number>): number {
+  if (template === "rsi_reversao") return Math.max(40, Math.round(numParam(p, "rsiLen", 14)) + 10);
+  if (template === "ema_cross") return Math.round(numParam(p, "slow", 21)) + 20;
+  return Math.round(numParam(p, "bbLen", 20)) + 20;
+}
+
+function templateSignal(
+  template: StrategyTemplateId,
+  p: Record<string, number>,
+  stops: { stopGainPct: number; stopLossPct: number; trailingPct?: number },
+  ctx: CryptoContext
+): CryptoSignal | null {
+  const klines = ctx.klines;
+  const closes = closesOf(klines);
+  const base = {
+    stopGainPct: stops.stopGainPct,
+    stopLossPct: stops.stopLossPct,
+    ...(stops.trailingPct ? { trailingPct: stops.trailingPct } : {}),
+  };
+  if (template === "rsi_reversao") {
+    const len = Math.round(numParam(p, "rsiLen", 14));
+    const os = numParam(p, "oversold", 30);
+    const ob = numParam(p, "overbought", 70);
+    if (klines.length < Math.max(40, len + 10)) return null;
+    const r = lastFinite(rsi(closes, len));
+    if (r === null) return null;
+    if (r < os)
+      return { action: "LONG", ...base, reason: `RSI${len} sobrevendido (${r.toFixed(0)})`, confidence: 62 };
+    if (r > ob)
+      return { action: "SHORT", ...base, reason: `RSI${len} sobrecomprado (${r.toFixed(0)})`, confidence: 62 };
+    return null;
+  }
+  if (template === "ema_cross") {
+    const fast = Math.round(numParam(p, "fast", 9));
+    const slow = Math.round(numParam(p, "slow", 21));
+    if (fast >= slow || klines.length < slow + 20) return null;
+    const ef = ema(closes, fast);
+    const es = ema(closes, slow);
+    if (ef.length < 2 || es.length < 2) return null;
+    const pf = ef[ef.length - 2];
+    const ps = es[es.length - 2];
+    const cf = ef[ef.length - 1];
+    const cs = es[es.length - 1];
+    if (pf == null || ps == null || cf == null || cs == null) return null;
+    if (pf <= ps && cf > cs)
+      return { action: "LONG", ...base, reason: `EMA${fast} cruzou EMA${slow} para cima`, confidence: 65 };
+    if (pf >= ps && cf < cs)
+      return { action: "SHORT", ...base, reason: `EMA${fast} cruzou EMA${slow} para baixo`, confidence: 65 };
+    return null;
+  }
+  // boll_breakout
+  const bbLen = Math.round(numParam(p, "bbLen", 20));
+  const bbMult = numParam(p, "bbMult", 2);
+  const volMin = numParam(p, "volumeMult", 1.5);
+  if (klines.length < bbLen + 20) return null;
+  const bb = bollinger(closes, bbLen, bbMult);
+  const upper = lastFinite(bb.upper);
+  const lower = lastFinite(bb.lower);
+  if (upper === null || lower === null) return null;
+  const avg = avgVolume(klines, 20);
+  if (avg === null) return null;
+  const mult = klines[klines.length - 1].v / avg;
+  if (ctx.lastClose > upper && mult > volMin)
+    return { action: "LONG", ...base, reason: `Rompimento banda sup. vol ${mult.toFixed(1)}×`, confidence: 68, volumeMult: +mult.toFixed(2) };
+  if (ctx.lastClose < lower && mult > volMin)
+    return { action: "SHORT", ...base, reason: `Rompimento banda inf. vol ${mult.toFixed(1)}×`, confidence: 68, volumeMult: +mult.toFixed(2) };
+  return null;
+}
+
+/** Constrói o CryptoStrategy executável a partir da spec guardada. */
+export function buildCustomStrategy(spec: CustomStrategySpec): CryptoStrategy {
+  const tpl = STRATEGY_TEMPLATES.find((t) => t.id === spec.template);
+  return {
+    id: spec.id,
+    name: spec.name,
+    description: spec.description || `Personalizada (${tpl?.name ?? spec.template}).`,
+    category: "auto",
+    minCandles: templateMinCandles(spec.template, spec.params),
+    defaults: {
+      stopGainPct: spec.stopGainPct,
+      stopLossPct: spec.stopLossPct,
+      ...(spec.trailingPct ? { trailingPct: spec.trailingPct } : {}),
+    },
+    timeframes: spec.timeframes,
+    modes: ["futures"],
+    indicators: templateIndicators(spec.template),
+    params: (tpl?.params ?? []).map((pd) => ({
+      ...pd,
+      default: numParam(spec.params, pd.key, pd.default as number),
+    })),
+    onSignal: (ctx) => {
+      const merged: Record<string, number> = { ...spec.params };
+      for (const [k, v] of Object.entries(ctx.params ?? {})) {
+        if (typeof v === "number" && Number.isFinite(v)) merged[k] = v;
+      }
+      return templateSignal(
+        spec.template,
+        merged,
+        { stopGainPct: spec.stopGainPct, stopLossPct: spec.stopLossPct, trailingPct: spec.trailingPct },
+        ctx
+      );
+    },
+  };
+}
+
+function templateIndicators(t: StrategyTemplateId): string[] {
+  if (t === "rsi_reversao") return ["RSI", "ATR"];
+  if (t === "ema_cross") return ["EMA rápida/lenta"];
+  return ["Bollinger", "Volume"];
+}
+
+function validateCustomSpec(s: NewCustomStrategy): string | null {
+  if (!s.name.trim()) return "Nome obrigatório.";
+  if (s.name.trim().length > 60) return "Nome demasiado longo (máx. 60).";
+  if (!STRATEGY_TEMPLATES.some((t) => t.id === s.template)) return "Template desconhecido.";
+  if (!Array.isArray(s.timeframes) || s.timeframes.length === 0) return "Escolhe pelo menos 1 timeframe.";
+  if (!(s.stopGainPct > 0) || !(s.stopLossPct > 0)) return "TP e SL têm de ser > 0.";
+  if (s.trailingPct !== undefined && !(s.trailingPct >= 0)) return "Trailing inválido.";
+  return null;
+}
+
+interface CustomStrategiesStore {
+  specs: CustomStrategySpec[];
+  create: (s: NewCustomStrategy) => { ok: boolean; reason?: string; id?: string };
+  remove: (id: string) => void;
+}
+
+export const useCustomStrategies = create<CustomStrategiesStore>()(
+  persist(
+    (set, get) => ({
+      specs: [],
+      create: (s) => {
+        const err = validateCustomSpec(s);
+        if (err) return { ok: false, reason: err };
+        const id = `custom_${Date.now().toString(36)}`;
+        if (get().specs.some((x) => x.id === id)) return { ok: false, reason: "Colisão de id, tenta de novo." };
+        const spec: CustomStrategySpec = {
+          id,
+          name: s.name.trim(),
+          description: (s.description ?? "").trim(),
+          template: s.template,
+          timeframes: [...s.timeframes],
+          params: { ...s.params },
+          stopGainPct: s.stopGainPct,
+          stopLossPct: s.stopLossPct,
+          ...(s.trailingPct !== undefined ? { trailingPct: s.trailingPct } : {}),
+          createdAt: Date.now(),
+        };
+        set((st) => ({ specs: [spec, ...st.specs] }));
+        return { ok: true, id };
+      },
+      remove: (id) => set((st) => ({ specs: st.specs.filter((x) => x.id !== id) })),
+    }),
+    { name: "quantterm:custom-strategies" }
+  )
+);
+
+export function getCustomStrategy(id: string): CryptoStrategy | undefined {
+  const spec = useCustomStrategies.getState().specs.find((x) => x.id === id);
+  return spec ? buildCustomStrategy(spec) : undefined;
+}
+
+export function isCustomStrategyId(id: string): boolean {
+  return id.startsWith("custom_");
+}
