@@ -60,7 +60,7 @@ import {
 } from "@/lib/cryptoFutures";
 import { CRYPTO_FEE_RATE as SPOT_PAPER_FEE } from "@/lib/cryptoPaper";
 
-type EntryLine = { price: number; color: string; label: string };
+type EntryLine = { price: number; color: string; label: string; includeInScale?: boolean };
 type Tool = "cursor" | "trend" | "hline" | "vline" | "erase";
 interface Drawing {
   id: string;
@@ -352,10 +352,18 @@ function FuturesChart({ klines, entryLines }: { klines: BinanceKline[]; entryLin
       }
     }
     entryLines.forEach((l) => {
-      if (Number.isFinite(l.price)) {
-        hi = Math.max(hi, l.price);
-        lo = Math.min(lo, l.price);
-      }
+      if (!Number.isFinite(l.price)) return;
+      // LIQ fica sempre fora da auto-escala: o preço de liquidação (ex.: 1x ≈
+      // 99,5% abaixo da entrada) rebentava o range vertical e o gráfico entrava
+      // em "zoom out". A linha continua desenhada (cortada se fora da vista).
+      if (l.includeInScale === false) return;
+      // Guarda extra: ignora linhas absurdamente longe das velas visíveis
+      // (ex.: TP/SL distante) para a escala vertical não colapsar.
+      const mid = (hi + lo) / 2;
+      const candleRange = Math.max(hi - lo, 1e-9);
+      if (Math.abs(l.price - mid) > candleRange * 5) return;
+      hi = Math.max(hi, l.price);
+      lo = Math.min(lo, l.price);
     });
     const range = hi - lo || 1;
     const pad = range * 0.06;
@@ -1075,11 +1083,12 @@ export default function Trading() {
     .reduce((s, t) => s + t.pnl, 0);
 
   const myPositions = paper.positions.filter((p) => p.symbol === symbol);
-  const chartLines = myPositions.flatMap((p) => [
-    { price: p.entryPrice, color: "#eab308", label: `${p.side} ${p.leverage}x` },
-    { price: p.liqPrice, color: "#ef4444", label: "LIQ" },
-    ...(p.tpPrice !== null ? [{ price: p.tpPrice, color: "#22c55e", label: "TP" }] : []),
-    ...(p.slPrice !== null ? [{ price: p.slPrice, color: "#f97316", label: "SL" }] : []),
+  const chartLines: EntryLine[] = myPositions.flatMap((p) => [
+    { price: p.entryPrice, color: "#eab308", label: `${p.side} ${p.leverage}x`, includeInScale: true },
+    // LIQ fora da escala vertical (ver cálculo do range no FuturesChart)
+    { price: p.liqPrice, color: "#ef4444", label: "LIQ", includeInScale: false },
+    ...(p.tpPrice !== null ? [{ price: p.tpPrice, color: "#22c55e", label: "TP", includeInScale: true } as EntryLine] : []),
+    ...(p.slPrice !== null ? [{ price: p.slPrice, color: "#f97316", label: "SL", includeInScale: true } as EntryLine] : []),
   ]);
 
   const posCount = paper.positions.length;
