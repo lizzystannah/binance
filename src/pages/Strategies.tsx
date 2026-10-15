@@ -1,5 +1,5 @@
 import { AppShell } from "@/components/AppShell";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BookOpen, Bot, FlaskConical, Play, Plus, Repeat, Search, Star, Info, Trash2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
@@ -16,29 +16,21 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import {
   CRYPTO_STRATEGIES,
-  STRATEGY_TEMPLATES,
   buildCustomStrategy,
   useActiveStrategy,
   useCustomStrategies,
   useStrategyInvert,
+  type CryptoStrategy,
   type StrategyDirection,
-  type StrategyTemplateId,
 } from "@/lib/cryptoStrategies";
 import { useCryptoRobots, type FuturesDirection } from "@/lib/cryptoRobots";
+import { FUTURES_TRADING_SYMBOLS } from "@/lib/binance";
 import { useBacktestMode } from "@/lib/backtestMode";
 import { useStore } from "@/lib/store";
-
-const DIR_LABEL: Record<StrategyDirection, string> = {
-  all: "Todas",
-  long: "Long",
-  short: "Short",
-};
+import { compileStrategy, peekStrategyMeta } from "@/lib/strategyRuntime";
+import { Textarea } from "@/components/ui/textarea";
 
 const ALL_TFS = ["1m", "5m", "15m", "1h", "4h"];
-
-function dirToRobot(d: StrategyDirection): FuturesDirection {
-  return d === "long" ? "LONG" : d === "short" ? "SHORT" : "BOTH";
-}
 
 function DocsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   return (
@@ -56,10 +48,12 @@ function DocsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: b
 
         <div className="flex flex-col gap-5 text-sm">
           <section>
-            <h3 className="font-bold text-white mb-1">1. Duas formas de criar</h3>
+            <h3 className="font-bold text-white mb-1">1. Criar uma estratégia é só colar código</h3>
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
-              <li><strong className="text-foreground">Botão “Nova estratégia”</strong> (recomendado): escolhe um template auditado (RSI, EMA, Bollinger), ajusta parâmetros, TP/SL e timeframes. Fica guardada e funciona em robôs e backtest como as embutidas.</li>
-              <li><strong className="text-foreground">Em código:</strong> objeto em <code className="font-mono text-[12px]">src/lib/cryptoStrategies.ts</code> registado em <code className="font-mono text-[12px]">CRYPTO_STRATEGIES</code> (ver secção 2). É este formato que deves enviar a uma IA para gerar estratégias.</li>
+              <li>Botão <strong className="text-foreground">“Nova estratégia”</strong>: cola o código e clica em <em>Validar e criar</em>. O <code className="font-mono">id</code>, o <code className="font-mono">name</code> e a <code className="font-mono">description</code> são lidos do próprio código — não os escreves à mão.</li>
+              <li>Podes colar TypeScript (o servidor compila com esbuild) ou JavaScript puro. Usa <code className="font-mono">export default {"{ ... }"}</code> ou define uma <code className="font-mono">const</code>.</li>
+              <li><strong className="text-foreground">Stops, entrada e alavancagem NÃO ficam na estratégia</strong> — definem-se ao criar o robô (SL%, TP%, entrada $, alavancagem) e são editáveis depois.</li>
+              <li><strong className="text-foreground">Formato do código:</strong> usa <code className="font-mono">export default {"{ ... }"}</code> (o mais simples) — a plataforma lê o <code className="font-mono">id</code> e o <code className="font-mono">name</code> daí. Também aceita <code className="font-mono">module.exports = {"{...}"}</code> ou um export nomeado (<code className="font-mono">export const minha = {"{...}"}</code>).</li>
             </ul>
           </section>
 
@@ -68,7 +62,7 @@ function DocsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: b
             <pre className="bg-background/60 border border-border/50 rounded p-3 text-[11px] font-mono overflow-x-auto">{`import { rsi } from "@/lib/indicators"; // só se usares indicadores
 import type { CryptoStrategy } from "@/lib/cryptoStrategies";
 
-export const minhaEstrategia: CryptoStrategy = {
+const minhaEstrategia: CryptoStrategy = {
   id: "minha_estrategia",        // único, minúsculas + _
   name: "Nome visível",
   description: "O que faz, em 1 frase",
@@ -85,7 +79,9 @@ export const minhaEstrategia: CryptoStrategy = {
   onSignal: (ctx) => {           // devolve CryptoSignal | null
     return null;
   },
-};`}</pre>
+};
+
+export default minhaEstrategia;   // Obrigatório: a plataforma lê o export default`}</pre>
           </section>
 
           <section>
@@ -187,126 +183,214 @@ return null;                                 // 4. sem sinal = null`}</pre>
 }
 
 function NewStrategyDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
-  const createCustom = useCustomStrategies((s) => s.create);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [template, setTemplate] = useState<StrategyTemplateId>("rsi_reversao");
-  const [tfs, setTfs] = useState<string[]>(["15m", "1h"]);
-  const [params, setParams] = useState<Record<string, number>>({});
-  const [tp, setTp] = useState("3");
-  const [sl, setSl] = useState("1.2");
-  const [trailing, setTrailing] = useState("");
+  const addCustom = useCustomStrategies((s) => s.add);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const meta = peekStrategyMeta(code);
 
-  const tpl = STRATEGY_TEMPLATES.find((t) => t.id === template)!;
-
-  const toggleTf = (tf: string) =>
-    setTfs((prev) => (prev.includes(tf) ? prev.filter((x) => x !== tf) : [...prev, tf]));
-
-  const submit = () => {
-    const p: Record<string, number> = {};
-    for (const pd of tpl.params) {
-      const raw = params[pd.key];
-      p[pd.key] = Number.isFinite(raw) ? (raw as number) : (pd.default as number);
+  useEffect(() => {
+    if (!open) {
+      setCode("");
+      setError("");
     }
-    const res = createCustom({
-      name,
-      description,
-      template,
-      timeframes: tfs,
-      params: p,
-      stopGainPct: parseFloat(tp),
-      stopLossPct: parseFloat(sl),
-      ...(trailing.trim() ? { trailingPct: parseFloat(trailing) } : {}),
-    });
-    if (!res.ok) return toast.error(res.reason || "Falha ao criar estratégia.");
-    toast.success(`Estratégia "${name.trim()}" criada. Já podes criar robô, ligar e correr backtest.`);
-    setName("");
-    setDescription("");
-    setParams({});
-    onOpenChange(false);
+  }, [open]);
+
+  const submit = async () => {
+    setError("");
+    if (!code.trim()) {
+      setError("Cola o código da estratégia.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { js, error: cErr } = await compileStrategy(code);
+      if (!js) {
+        setError(cErr || "Falha de compilação.");
+        return;
+      }
+      const res = addCustom({ code, js });
+      if (!res.ok) {
+        setError(res.reason || "Falha ao criar estratégia.");
+        return;
+      }
+      const m = peekStrategyMeta(code);
+      toast.success(`Estratégia "${m.name || res.id}" criada (id: ${res.id}).`);
+      setCode("");
+      onOpenChange(false);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Plus className="h-4 w-4 text-primary" /> Nova estratégia
+            <Plus className="h-4 w-4 text-primary" /> Nova estratégia (código)
           </DialogTitle>
           <DialogDescription>
-            Template auditado + os teus parâmetros. Funciona em robôs e backtest como as embutidas.
+            Cola o código da estratégia — o <code>id</code> e o <code>name</code> são lidos do próprio
+            código. Os stops, a entrada e a alavancagem definem-se depois, ao criar o robô.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3 text-sm">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">Nome</span>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: RSI agressivo BTC" maxLength={60} className="h-9" />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">Descrição (opcional)</span>
-            <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Quando entra e porquê" className="h-9" />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">Template</span>
-            <select value={template} onChange={(e) => setTemplate(e.target.value as StrategyTemplateId)} className="h-9 text-xs bg-secondary/50 border border-border rounded-md px-2">
-              {STRATEGY_TEMPLATES.map((t) => (
-                <option key={t.id} value={t.id}>{t.name} — {t.description}</option>
-              ))}
-            </select>
-          </label>
-          <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">Timeframes</span>
-            <div className="flex flex-wrap gap-1.5">
-              {ALL_TFS.map((tf) => (
-                <button
-                  key={tf}
-                  onClick={() => toggleTf(tf)}
-                  className={`text-[11px] font-mono px-2.5 py-1 rounded border ${tfs.includes(tf) ? "bg-primary/15 border-primary/50 text-primary" : "bg-secondary/40 border-border/40 text-muted-foreground"}`}
-                >
-                  {tf}
-                </button>
-              ))}
+          {meta.id || meta.name ? (
+            <div className="text-[11px] font-mono bg-secondary/30 border border-border/40 rounded p-2 flex flex-wrap gap-3 items-center">
+              <span>id: <span className="text-primary">{meta.id ?? "—"}</span></span>
+              <span>nome: <span className="text-foreground">{meta.name ?? "—"}</span></span>
+              {meta.description && <span className="text-muted-foreground truncate max-w-[280px]">{meta.description}</span>}
             </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              O código deve definir <code className="font-mono">id</code> e <code className="font-mono">name</code>{" "}
+              e uma função <code className="font-mono">onSignal</code>.
+            </p>
+          )}
+          <Textarea
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            spellCheck={false}
+            placeholder={`export default {\n  id: "rsi_reversao",\n  name: "RSI Reversão",\n  minCandles: 60,\n  onSignal: (ctx) => {\n    // usa ctx.klines / ctx.closes e devolve LONG/SHORT/EXIT/FLAT ou null\n    return null;\n  },\n};`}
+            className="font-mono text-xs h-[46vh] bg-background"
+          />
+          {error && <p className="text-[11px] text-rose-400 whitespace-pre-wrap">{error}</p>}
+          <div className="flex gap-2">
+            <Button variant="outline" className="h-9 text-xs" onClick={() => onOpenChange(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={submit} disabled={busy} className="h-9 text-xs font-bold flex-1">
+              <Plus className="h-3.5 w-3.5 mr-1" /> {busy ? "A compilar…" : "Validar e criar"}
+            </Button>
           </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">Parâmetros do template</span>
-            {tpl.params.map((pd) => (
-              <label key={pd.key} className="flex items-center justify-between gap-2 text-xs">
-                <span title={typeof pd.hint === "string" ? pd.hint : undefined}>{pd.label}</span>
-                <Input
-                  type="number"
-                  value={params[pd.key] ?? (pd.default as number)}
-                  min={pd.min}
-                  max={pd.max}
-                  step={pd.step}
-                  onChange={(e) => setParams((prev) => ({ ...prev, [pd.key]: parseFloat(e.target.value) }))}
-                  className="h-8 w-28 text-xs font-mono text-right"
-                />
-              </label>
-            ))}
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">Take-profit %</span>
-              <Input type="number" value={tp} min={0.1} step={0.1} onChange={(e) => setTp(e.target.value)} className="h-9 text-xs font-mono" />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">Stop-loss %</span>
-              <Input type="number" value={sl} min={0.1} step={0.1} onChange={(e) => setSl(e.target.value)} className="h-9 text-xs font-mono" />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">Trailing % (opc.)</span>
-              <Input type="number" value={trailing} min={0} step={0.1} placeholder="—" onChange={(e) => setTrailing(e.target.value)} className="h-9 text-xs font-mono" />
-            </label>
-          </div>
-          <Button onClick={submit} className="h-9 text-xs font-bold">
-            <Plus className="h-3.5 w-3.5 mr-1" /> Criar estratégia
-          </Button>
         </div>
       </DialogContent>
     </Dialog>
   );
 }
+
+function CreateRobotDialog({ strategy, invert, direction, onOpenChange }: {
+  strategy: CryptoStrategy;
+  invert: boolean;
+  direction: StrategyDirection;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const createRobot = useCryptoRobots((s) => s.createRobot);
+  const [name, setName] = useState(`${strategy.name} #${Math.floor(Math.random() * 900) + 100}`);
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [interval, setInterval] = useState(strategy.timeframes?.[0] ?? "15m");
+  const [dir, setDir] = useState<FuturesDirection>(direction === "long" ? "LONG" : direction === "short" ? "SHORT" : "BOTH");
+  const [leverage, setLeverage] = useState("5");
+  const [entry, setEntry] = useState("100");
+  const [tp, setTp] = useState(String(strategy.defaults.stopGainPct));
+  const [sl, setSl] = useState(String(strategy.defaults.stopLossPct));
+  const [capital, setCapital] = useState("1000");
+  const [maxPos, setMaxPos] = useState("2");
+  const [cooldown, setCooldown] = useState("30");
+
+  const submit = () => {
+    const res = createRobot({
+      name: name.trim() || strategy.name,
+      symbol,
+      interval,
+      strategyId: strategy.id,
+      mode: "futures",
+      direction: dir,
+      leverage: Math.min(125, Math.max(1, parseInt(leverage) || 5)),
+      marginMode: "isolated",
+      fundingAware: true,
+      invert,
+      capitalAllocated: parseFloat(capital) || 0,
+      stakePerEntry: parseFloat(entry) || 0,
+      acctStopGainPct: parseFloat(tp) || 0,
+      acctStopLossPct: parseFloat(sl) || 0,
+      maxPositions: parseInt(maxPos) || 2,
+      cooldownMin: parseFloat(cooldown) || 0,
+    });
+    if (!res.ok) return toast.error(res.reason || "Falha ao criar robô.");
+    toast.success(`Robô "${name.trim()}" criado (${symbol} ${interval}). Ajusta em Robôs.`);
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Bot className="h-4 w-4 text-primary" /> Criar robô — {strategy.name}
+          </DialogTitle>
+          <DialogDescription>
+            O robô opera exatamente o <code>onSignal</code> desta estratégia. Aqui defines direção, entrada,
+            alavancagem, stop-gain e stop-loss.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <label className="flex flex-col gap-1 col-span-2">
+            <span className="text-xs text-muted-foreground">Nome do robô</span>
+            <Input value={name} onChange={(e) => setName(e.target.value)} className="h-9" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Par</span>
+            <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className="h-9 text-xs bg-secondary/50 border border-border rounded px-2 font-mono">
+              {FUTURES_TRADING_SYMBOLS.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Timeframe</span>
+            <select value={interval} onChange={(e) => setInterval(e.target.value)} className="h-9 text-xs bg-secondary/50 border border-border rounded px-2 font-mono">
+              {(strategy.timeframes?.length ? strategy.timeframes : ALL_TFS).map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Direção</span>
+            <select value={dir} onChange={(e) => setDir(e.target.value as FuturesDirection)} className="h-9 text-xs bg-secondary/50 border border-border rounded px-2">
+              <option value="BOTH">Ambos (Long+Short)</option>
+              <option value="LONG">Só Long</option>
+              <option value="SHORT">Só Short</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Alavancagem (1–125x)</span>
+            <Input value={leverage} onChange={(e) => setLeverage(e.target.value)} className="h-9 text-xs font-mono" inputMode="numeric" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Valor de entrada $</span>
+            <Input value={entry} onChange={(e) => setEntry(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Capital alocado $</span>
+            <Input value={capital} onChange={(e) => setCapital(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Stop-gain %</span>
+            <Input value={tp} onChange={(e) => setTp(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Stop-loss %</span>
+            <Input value={sl} onChange={(e) => setSl(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Máx. posições (1–5)</span>
+            <Input value={maxPos} onChange={(e) => setMaxPos(e.target.value)} className="h-9 text-xs font-mono" inputMode="numeric" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">Cooldown (min)</span>
+            <Input value={cooldown} onChange={(e) => setCooldown(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
+          </label>
+          {invert && <p className="col-span-2 text-[11px] text-warning">Sinais invertidos (LONG↔SHORT) — definido no card.</p>}
+          <div className="col-span-2 flex gap-2 pt-1">
+            <Button variant="outline" className="h-9 text-xs flex-1" onClick={() => onOpenChange(false)}>Cancelar</Button>
+            <Button onClick={submit} className="h-9 text-xs font-bold flex-1">
+              <Bot className="h-3.5 w-3.5 mr-1" /> Criar robô
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 
 export default function Strategies() {
   const navigate = useNavigate();
@@ -315,6 +399,7 @@ export default function Strategies() {
   const [timeframe, setTimeframe] = useState("todas");
   const [docsOpen, setDocsOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
+  const [robotFor, setRobotFor] = useState<string | null>(null);
   const [directions, setDirections] = useState<Record<string, StrategyDirection>>({});
   const [favorites, setFavorites] = useState<Record<string, boolean>>(() => {
     try {
@@ -324,7 +409,6 @@ export default function Strategies() {
     }
   });
 
-  const createRobot = useCryptoRobots((s) => s.createRobot);
   const activeStrategyId = useActiveStrategy((s) => s.activeStrategyId);
   const activeDirection = useActiveStrategy((s) => s.direction);
   const setActiveStrategy = useActiveStrategy((s) => s.setActive);
@@ -363,30 +447,8 @@ export default function Strategies() {
   const nFav = all.filter((s) => favorites[s.id]).length;
 
   const handleCreate = (strategyId: string) => {
-    const d = dirOf(strategyId);
-    const s = all.find((x) => x.id === strategyId);
-    if (!s) return toast.error("Estratégia desconhecida.");
-    const res = createRobot({
-      name: `${strategyId} #${Math.floor(Math.random() * 900) + 100}`,
-      symbol: "BTCUSDT",
-      interval: s.timeframes?.[0] ?? "15m",
-      strategyId,
-      mode: "futures",
-      direction: dirToRobot(d),
-      leverage: 5,
-      marginMode: "isolated",
-      fundingAware: true,
-      invert: !!invertMap[strategyId],
-      capitalAllocated: 1000,
-      stakePerEntry: 100,
-      acctStopGainPct: s.defaults.stopGainPct,
-      acctStopLossPct: s.defaults.stopLossPct,
-      maxPositions: 2,
-      cooldownMin: 30,
-    });
-    if (!res.ok) return toast.error(res.reason || "Falha ao criar robô.");
-    toast.success(`Robô de Futuros criado (${s.timeframes?.[0] ?? "15m"}, TP ${s.defaults.stopGainPct}%/SL ${s.defaults.stopLossPct}%, ${DIR_LABEL[d]}). Ajusta em Robôs.`);
-    navigate("/robots");
+    if (!all.some((x) => x.id === strategyId)) return toast.error("Estratégia desconhecida.");
+    setRobotFor(strategyId);
   };
 
   const handleToggleActive = (strategyId: string, on: boolean) => {
@@ -435,9 +497,9 @@ export default function Strategies() {
           <div className="flex items-start gap-2 text-[11px] text-muted-foreground bg-secondary/20 border border-border/30 rounded p-2 mb-4">
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-primary" />
             <span>
-              O robô nasce do card da estratégia com direção, timeframe e stops copiados.
-              O <strong>Switch Ligar</strong> marca a estratégia como ativa (para o Backtest e a futura execução automática).
-              Tudo corre na conta paper — sem alavancagem real em corretora.
+              Cria a estratégia colando código (id/nome são lidos do código). O botão <strong>Criar robô</strong> abre
+              os parâmetros (direção, entrada, alavancagem, stop-gain, stop-loss) e o robô opera exatamente o
+              <code className="font-mono"> onSignal</code> desta estratégia. Tudo na conta paper — sem alavancagem real.
             </span>
           </div>
           <div className="flex flex-wrap gap-2 items-center">
@@ -574,6 +636,18 @@ export default function Strategies() {
 
         <DocsDialog open={docsOpen} onOpenChange={setDocsOpen} />
         <NewStrategyDialog open={newOpen} onOpenChange={setNewOpen} />
+        {robotFor && (() => {
+          const s = all.find((x) => x.id === robotFor);
+          if (!s) return null;
+          return (
+            <CreateRobotDialog
+              strategy={s}
+              invert={!!invertMap[s.id]}
+              direction={dirOf(s.id)}
+              onOpenChange={(v) => { if (!v) setRobotFor(null); }}
+            />
+          );
+        })()}
       </div>
     </AppShell>
   );

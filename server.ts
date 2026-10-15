@@ -232,6 +232,22 @@ async function main() {
     }
   });
 
+  // ── Compilação de estratégias (TS/JS → CommonJS avaliável no browser) ───────
+  app.post("/api/strategies/compile", async (req, res) => {
+    try {
+      const code = String((req.body || {}).code || "");
+      if (!code.trim()) return res.status(400).json({ error: "Código vazio." });
+      if (code.length > 200_000) return res.status(413).json({ error: "Código demasiado grande (máx. 200 kB)." });
+      const esbuild = await import("esbuild");
+      const result = await esbuild.transform(code, { loader: "ts", format: "cjs", target: "es2020" });
+      res.json({ success: true, js: result.code });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[Strategies] compile error:", msg);
+      res.status(400).json({ error: `Erro de compilação: ${msg}` });
+    }
+  });
+
   // ── API 404 (impede fallback HTML do SPA) ──────────────────────────────────
   app.use("/api", (req, res) => {
     console.warn(`[HTTP] 404 - API Route not found: ${req.method} ${req.path}`);

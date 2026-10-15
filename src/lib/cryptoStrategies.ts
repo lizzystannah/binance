@@ -608,206 +608,76 @@ export function applyDirectionAndInvert(
   return sig;
 }
 
-// ─── Estratégias personalizadas (botão "Nova estratégia") ───────────────────
-// Sem execução de código arbitrário: a personalizada escolhe um TEMPLATE
-// (lógica fixa e auditada) + parâmetros numéricos. O onSignal é gerado a
-// partir do template, por isso funciona em robôs, validação e backtest sem
-// nenhuma alteração nesses motores.
+// ─── Estratégias personalizadas (código colado pelo utilizador) ──────────────
+// A estratégia personalizada é definida por CÓDIGO. O `id` e o `name` são lidos
+// do próprio objeto devolvido pelo código (nada de preencher à mão). Os stops,
+// a entrada e a alavancagem são parâmetros do ROBÔ, não da estratégia.
 
-export type StrategyTemplateId = "rsi_reversao" | "ema_cross" | "boll_breakout";
-
-export interface StrategyTemplate {
-  id: StrategyTemplateId;
-  name: string;
-  description: string;
-  params: CryptoStrategyParam[];
-}
-
-export const STRATEGY_TEMPLATES: StrategyTemplate[] = [
-  {
-    id: "rsi_reversao",
-    name: "RSI Reversão",
-    description: "LONG em sobrevenda, SHORT em sobrecompra (futuros).",
-    params: [
-      { key: "rsiLen", label: "Período RSI", type: "number", default: 14, min: 2, max: 50, step: 1 },
-      { key: "oversold", label: "RSI sobrevenda", type: "number", default: 30, min: 10, max: 45, step: 1 },
-      { key: "overbought", label: "RSI sobrecompra", type: "number", default: 70, min: 55, max: 90, step: 1 },
-    ],
-  },
-  {
-    id: "ema_cross",
-    name: "Cruzamento EMA",
-    description: "LONG no cruzamento rápida> lenta, SHORT no inverso.",
-    params: [
-      { key: "fast", label: "EMA rápida", type: "number", default: 9, min: 2, max: 50, step: 1 },
-      { key: "slow", label: "EMA lenta", type: "number", default: 21, min: 5, max: 200, step: 1 },
-    ],
-  },
-  {
-    id: "boll_breakout",
-    name: "Bollinger Breakout",
-    description: "LONG rompendo banda superior com volume, SHORT na inferior.",
-    params: [
-      { key: "bbLen", label: "Período", type: "number", default: 20, min: 10, max: 50, step: 1 },
-      { key: "bbMult", label: "Desvios", type: "number", default: 2, min: 1, max: 3, step: 0.1 },
-      { key: "volumeMult", label: "Volume mín. ×", type: "number", default: 1.5, min: 1, max: 4, step: 0.1 },
-    ],
-  },
-];
+import { evalStrategy, type LoadedStrategy } from "./strategyRuntime";
 
 export interface CustomStrategySpec {
   id: string;
   name: string;
   description: string;
-  template: StrategyTemplateId;
-  timeframes: string[];
-  params: Record<string, number>;
-  stopGainPct: number;
-  stopLossPct: number;
-  trailingPct?: number;
+  /** Código original colado (TS/JS), guardado para edição. */
+  code: string;
+  /** Código compilado (CommonJS), avaliado sincronamente para obter onSignal. */
+  js: string;
   createdAt: number;
 }
 
 export interface NewCustomStrategy {
-  name: string;
-  description?: string;
-  template: StrategyTemplateId;
-  timeframes: string[];
-  params: Record<string, number>;
-  stopGainPct: number;
-  stopLossPct: number;
-  trailingPct?: number;
+  code: string;
+  js: string;
 }
 
-function numParam(params: Record<string, number>, key: string, fb: number): number {
-  const v = params[key];
-  return Number.isFinite(v) ? (v as number) : fb;
-}
+const compiledCache = new Map<string, LoadedStrategy | null>();
 
-function templateMinCandles(template: StrategyTemplateId, p: Record<string, number>): number {
-  if (template === "rsi_reversao") return Math.max(40, Math.round(numParam(p, "rsiLen", 14)) + 10);
-  if (template === "ema_cross") return Math.round(numParam(p, "slow", 21)) + 20;
-  return Math.round(numParam(p, "bbLen", 20)) + 20;
-}
-
-function templateSignal(
-  template: StrategyTemplateId,
-  p: Record<string, number>,
-  stops: { stopGainPct: number; stopLossPct: number; trailingPct?: number },
-  ctx: CryptoContext
-): CryptoSignal | null {
-  const klines = ctx.klines;
-  const closes = closesOf(klines);
-  const base = {
-    stopGainPct: stops.stopGainPct,
-    stopLossPct: stops.stopLossPct,
-    ...(stops.trailingPct ? { trailingPct: stops.trailingPct } : {}),
-  };
-  if (template === "rsi_reversao") {
-    const len = Math.round(numParam(p, "rsiLen", 14));
-    const os = numParam(p, "oversold", 30);
-    const ob = numParam(p, "overbought", 70);
-    if (klines.length < Math.max(40, len + 10)) return null;
-    const r = lastFinite(rsi(closes, len));
-    if (r === null) return null;
-    if (r < os)
-      return { action: "LONG", ...base, reason: `RSI${len} sobrevendido (${r.toFixed(0)})`, confidence: 62 };
-    if (r > ob)
-      return { action: "SHORT", ...base, reason: `RSI${len} sobrecomprado (${r.toFixed(0)})`, confidence: 62 };
-    return null;
-  }
-  if (template === "ema_cross") {
-    const fast = Math.round(numParam(p, "fast", 9));
-    const slow = Math.round(numParam(p, "slow", 21));
-    if (fast >= slow || klines.length < slow + 20) return null;
-    const ef = ema(closes, fast);
-    const es = ema(closes, slow);
-    if (ef.length < 2 || es.length < 2) return null;
-    const pf = ef[ef.length - 2];
-    const ps = es[es.length - 2];
-    const cf = ef[ef.length - 1];
-    const cs = es[es.length - 1];
-    if (pf == null || ps == null || cf == null || cs == null) return null;
-    if (pf <= ps && cf > cs)
-      return { action: "LONG", ...base, reason: `EMA${fast} cruzou EMA${slow} para cima`, confidence: 65 };
-    if (pf >= ps && cf < cs)
-      return { action: "SHORT", ...base, reason: `EMA${fast} cruzou EMA${slow} para baixo`, confidence: 65 };
-    return null;
-  }
-  // boll_breakout
-  const bbLen = Math.round(numParam(p, "bbLen", 20));
-  const bbMult = numParam(p, "bbMult", 2);
-  const volMin = numParam(p, "volumeMult", 1.5);
-  if (klines.length < bbLen + 20) return null;
-  const bb = bollinger(closes, bbLen, bbMult);
-  const upper = lastFinite(bb.upper);
-  const lower = lastFinite(bb.lower);
-  if (upper === null || lower === null) return null;
-  const avg = avgVolume(klines, 20);
-  if (avg === null) return null;
-  const mult = klines[klines.length - 1].v / avg;
-  if (ctx.lastClose > upper && mult > volMin)
-    return { action: "LONG", ...base, reason: `Rompimento banda sup. vol ${mult.toFixed(1)}×`, confidence: 68, volumeMult: +mult.toFixed(2) };
-  if (ctx.lastClose < lower && mult > volMin)
-    return { action: "SHORT", ...base, reason: `Rompimento banda inf. vol ${mult.toFixed(1)}×`, confidence: 68, volumeMult: +mult.toFixed(2) };
-  return null;
-}
-
-/** Constrói o CryptoStrategy executável a partir da spec guardada. */
-export function buildCustomStrategy(spec: CustomStrategySpec): CryptoStrategy {
-  const tpl = STRATEGY_TEMPLATES.find((t) => t.id === spec.template);
+function erroredSpec(spec: { id: string; name: string; description: string }): CryptoStrategy {
   return {
     id: spec.id,
-    name: spec.name,
-    description: spec.description || `Personalizada (${tpl?.name ?? spec.template}).`,
+    name: spec.name || spec.id,
+    description: spec.description || "Estratégia com erro de compilação.",
     category: "auto",
-    minCandles: templateMinCandles(spec.template, spec.params),
-    defaults: {
-      stopGainPct: spec.stopGainPct,
-      stopLossPct: spec.stopLossPct,
-      ...(spec.trailingPct ? { trailingPct: spec.trailingPct } : {}),
-    },
-    timeframes: spec.timeframes,
+    minCandles: 9999,
+    defaults: { stopGainPct: 3, stopLossPct: 1.2 },
+    timeframes: [],
     modes: ["futures"],
-    indicators: templateIndicators(spec.template),
-    params: (tpl?.params ?? []).map((pd) => ({
-      ...pd,
-      default: numParam(spec.params, pd.key, pd.default as number),
-    })),
-    onSignal: (ctx) => {
-      const merged: Record<string, number> = { ...spec.params };
-      for (const [k, v] of Object.entries(ctx.params ?? {})) {
-        if (typeof v === "number" && Number.isFinite(v)) merged[k] = v;
-      }
-      return templateSignal(
-        spec.template,
-        merged,
-        { stopGainPct: spec.stopGainPct, stopLossPct: spec.stopLossPct, trailingPct: spec.trailingPct },
-        ctx
-      );
-    },
+    onSignal: () => null,
   };
 }
 
-function templateIndicators(t: StrategyTemplateId): string[] {
-  if (t === "rsi_reversao") return ["RSI", "ATR"];
-  if (t === "ema_cross") return ["EMA rápida/lenta"];
-  return ["Bollinger", "Volume"];
-}
-
-function validateCustomSpec(s: NewCustomStrategy): string | null {
-  if (!s.name.trim()) return "Nome obrigatório.";
-  if (s.name.trim().length > 60) return "Nome demasiado longo (máx. 60).";
-  if (!STRATEGY_TEMPLATES.some((t) => t.id === s.template)) return "Template desconhecido.";
-  if (!Array.isArray(s.timeframes) || s.timeframes.length === 0) return "Escolhe pelo menos 1 timeframe.";
-  if (!(s.stopGainPct > 0) || !(s.stopLossPct > 0)) return "TP e SL têm de ser > 0.";
-  if (s.trailingPct !== undefined && !(s.trailingPct >= 0)) return "Trailing inválido.";
-  return null;
+export function buildCustomStrategy(spec: CustomStrategySpec): CryptoStrategy {
+  if (!spec || typeof spec.js !== "string") return erroredSpec(spec ?? { id: "?", name: "?", description: "" });
+  let loaded = compiledCache.get(spec.js);
+  if (loaded === undefined) {
+    loaded = evalStrategy(spec.js).strategy ?? null;
+    compiledCache.set(spec.js, loaded);
+  }
+  if (!loaded) return erroredSpec(spec);
+  const d = loaded.defaults ?? {};
+  return {
+    id: spec.id,
+    name: spec.name || loaded.name || spec.id,
+    description: spec.description || loaded.description || "",
+    category: "auto",
+    minCandles: Number.isFinite(loaded.minCandles) ? (loaded.minCandles as number) : 60,
+    defaults: {
+      stopGainPct: Number.isFinite(d.stopGainPct) ? (d.stopGainPct as number) : 3,
+      stopLossPct: Number.isFinite(d.stopLossPct) ? (d.stopLossPct as number) : 1.2,
+      ...(Number.isFinite(d.trailingPct) ? { trailingPct: d.trailingPct as number } : {}),
+    },
+    timeframes: Array.isArray(loaded.timeframes) ? (loaded.timeframes as string[]) : [],
+    modes: ["futures"],
+    indicators: Array.isArray(loaded.indicators) ? (loaded.indicators as string[]) : undefined,
+    params: Array.isArray(loaded.params) ? (loaded.params as CryptoStrategy["params"]) : undefined,
+    onSignal: (ctx) => loaded!.onSignal(ctx) as CryptoSignal | null,
+  };
 }
 
 interface CustomStrategiesStore {
   specs: CustomStrategySpec[];
-  create: (s: NewCustomStrategy) => { ok: boolean; reason?: string; id?: string };
+  add: (s: NewCustomStrategy) => { ok: boolean; reason?: string; id?: string };
   remove: (id: string) => void;
 }
 
@@ -815,29 +685,31 @@ export const useCustomStrategies = create<CustomStrategiesStore>()(
   persist(
     (set, get) => ({
       specs: [],
-      create: (s) => {
-        const err = validateCustomSpec(s);
-        if (err) return { ok: false, reason: err };
-        const id = `custom_${Date.now().toString(36)}`;
-        if (get().specs.some((x) => x.id === id)) return { ok: false, reason: "Colisão de id, tenta de novo." };
+      add: (s) => {
+        const res = evalStrategy(s.js);
+        if (!res.strategy) return { ok: false, reason: res.error || "Código inválido." };
+        const id = String(res.strategy.id ?? "").trim();
+        if (!id) return { ok: false, reason: "O código não define um 'id'." };
+        if (!/^[a-zA-Z0-9_]+$/.test(id)) return { ok: false, reason: "O 'id' só pode ter letras, números e _." };
+        if (get().specs.some((x) => x.id === id)) return { ok: false, reason: `Já existe uma estratégia com o id "${id}".` };
         const spec: CustomStrategySpec = {
           id,
-          name: s.name.trim(),
-          description: (s.description ?? "").trim(),
-          template: s.template,
-          timeframes: [...s.timeframes],
-          params: { ...s.params },
-          stopGainPct: s.stopGainPct,
-          stopLossPct: s.stopLossPct,
-          ...(s.trailingPct !== undefined ? { trailingPct: s.trailingPct } : {}),
+          name: res.strategy.name || id,
+          description: res.strategy.description || "",
+          code: s.code,
+          js: s.js,
           createdAt: Date.now(),
         };
         set((st) => ({ specs: [spec, ...st.specs] }));
         return { ok: true, id };
       },
-      remove: (id) => set((st) => ({ specs: st.specs.filter((x) => x.id !== id) })),
+      remove: (id) => {
+        const spec = get().specs.find((x) => x.id === id);
+        if (spec) compiledCache.delete(spec.js);
+        set((st) => ({ specs: st.specs.filter((x) => x.id !== id) }));
+      },
     }),
-    { name: "quantterm:custom-strategies" }
+    { name: "quantterm:custom-strategies-v2" }
   )
 );
 
@@ -847,5 +719,5 @@ export function getCustomStrategy(id: string): CryptoStrategy | undefined {
 }
 
 export function isCustomStrategyId(id: string): boolean {
-  return id.startsWith("custom_");
+  return useCustomStrategies.getState().specs.some((x) => x.id === id);
 }

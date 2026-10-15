@@ -9,107 +9,70 @@ import {
   type CryptoCandle,
   type CryptoSignal,
 } from "@/lib/cryptoStrategies";
+import { evalStrategy, peekStrategyMeta } from "@/lib/strategyRuntime";
 
-function candles(prices: number[]): CryptoCandle[] {
-  return prices.map((c, i) => ({ t: i * 60_000, o: c, h: c * 1.001, l: c * 0.999, c, v: 1000 }));
-}
+// Código compilado (CommonJS) equivalente ao que o servidor produz.
+const CJS_RSI = `"use strict";
+const strategy = {
+  id: "rsi_custom",
+  name: "RSI Custom",
+  description: "demo",
+  minCandles: 30,
+  onSignal: (ctx) => {
+    const c = ctx.klines[ctx.klines.length - 1].c;
+    const first = ctx.klines[0].c;
+    if (c < first) return { action: "LONG", stopGainPct: 2, stopLossPct: 1, reason: "down" };
+    return null;
+  },
+};
+module.exports.default = strategy;`;
 
-const down = Array.from({ length: 60 }, (_, i) => 100 - i * 0.5); // queda estável → RSI baixo
-const up = Array.from({ length: 60 }, (_, i) => 70 + i * 0.5); // subida estável → RSI alto
-
-describe("custom strategies", () => {
-  it("template RSI: sobrevenda dá LONG com stops da spec", () => {
-    const s = buildCustomStrategy({
-      id: "custom_t1",
-      name: "T",
-      description: "",
-      template: "rsi_reversao",
-      timeframes: ["15m"],
-      params: { rsiLen: 14, oversold: 30, overbought: 70 },
-      stopGainPct: 3,
-      stopLossPct: 1.2,
-      createdAt: 0,
-    });
-    const sig = s.onSignal({
-      symbol: "BTCUSDT",
-      interval: "15m",
-      klines: candles(down),
-      closes: down,
-      lastClose: down[down.length - 1],
-      mode: "futures",
-    });
-    expect(sig?.action).toBe("LONG");
-    expect(sig?.stopGainPct).toBe(3);
-    expect(sig?.stopLossPct).toBe(1.2);
+describe("strategy runtime", () => {
+  it("avalia código CommonJS e extrai id/name", () => {
+    const { strategy, error } = evalStrategy(CJS_RSI);
+    expect(error).toBeUndefined();
+    expect(strategy?.id).toBe("rsi_custom");
+    expect(strategy?.name).toBe("RSI Custom");
   });
 
-  it("template RSI: sobrecompra dá SHORT", () => {
-    const s = buildCustomStrategy({
-      id: "custom_t2",
-      name: "T",
-      description: "",
-      template: "rsi_reversao",
-      timeframes: ["15m"],
-      params: { rsiLen: 14, oversold: 30, overbought: 70 },
-      stopGainPct: 3,
-      stopLossPct: 1.2,
-      createdAt: 0,
-    });
-    const sig = s.onSignal({
-      symbol: "BTCUSDT",
-      interval: "15m",
-      klines: candles(up),
-      closes: up,
-      lastClose: up[up.length - 1],
-      mode: "futures",
-    });
-    expect(sig?.action).toBe("SHORT");
+  it("rejeita código sem onSignal", () => {
+    const { strategy, error } = evalStrategy("module.exports.default = { id: 'x' };");
+    expect(strategy).toBeUndefined();
+    expect(error).toBeTruthy();
   });
 
-  it("ema_cross inválida (fast>=slow) nunca sinaliza", () => {
-    const s = buildCustomStrategy({
-      id: "custom_t3",
-      name: "T",
-      description: "",
-      template: "ema_cross",
-      timeframes: ["15m"],
-      params: { fast: 21, slow: 21 },
-      stopGainPct: 2,
-      stopLossPct: 1,
-      createdAt: 0,
-    });
-    const sig = s.onSignal({
-      symbol: "BTCUSDT",
-      interval: "15m",
-      klines: candles(up),
-      closes: up,
-      lastClose: up[up.length - 1],
-      mode: "futures",
-    });
-    expect(sig).toBeNull();
+  it("aceita module.exports direto e export nomeado", () => {
+    expect(evalStrategy("const s = { id: 'direct', onSignal: () => null }; module.exports = s;").strategy?.id).toBe("direct");
+    expect(evalStrategy("exports.minha = { id: 'named', onSignal: () => null };").strategy?.id).toBe("named");
   });
 
-  it("store: criar, resolver via getCustomStrategy e remover", () => {
-    const { create, remove } = useCustomStrategies.getState();
-    const res = create({
-      name: "Minha RSI",
-      template: "rsi_reversao",
-      timeframes: ["15m"],
-      params: { rsiLen: 14, oversold: 30, overbought: 70 },
-      stopGainPct: 3,
-      stopLossPct: 1.2,
-    });
+  it("peekStrategyMeta captura id/name do código", () => {
+    const m = peekStrategyMeta(`export default { id: "abc", name: "Nome X", description: "d" };`);
+    expect(m.id).toBe("abc");
+    expect(m.name).toBe("Nome X");
+  });
+});
+
+describe("custom strategies (código)", () => {
+  it("store: add a partir de código, resolver e remover", () => {
+    const { add, remove } = useCustomStrategies.getState();
+    const res = add({ code: "// demo", js: CJS_RSI });
     expect(res.ok).toBe(true);
-    expect(getCustomStrategy(res.id!)).toBeDefined();
-    expect(listAllStrategies().some((s) => s.id === res.id)).toBe(true);
-    remove(res.id!);
-    expect(getCustomStrategy(res.id!)).toBeUndefined();
+    expect(res.id).toBe("rsi_custom");
+    const s = getCustomStrategy("rsi_custom");
+    expect(s).toBeDefined();
+    expect(listAllStrategies().some((x) => x.id === "rsi_custom")).toBe(true);
+    // onSignal vem do código
+    const objs = Array.from({ length: 30 }, (_, i) => ({ t: i, o: 100, h: 100, l: 100, c: 100 - i, v: 1 }));
+    const sig = s!.onSignal({ symbol: "BTCUSDT", interval: "15m", klines: objs, closes: objs.map((k) => k.c), lastClose: objs[objs.length - 1].c, mode: "futures" });
+    expect(sig?.action).toBe("LONG");
+    remove("rsi_custom");
+    expect(getCustomStrategy("rsi_custom")).toBeUndefined();
   });
 
-  it("store: rejeita spec inválida", () => {
-    const { create } = useCustomStrategies.getState();
-    expect(create({ name: "", template: "rsi_reversao", timeframes: ["15m"], params: {}, stopGainPct: 3, stopLossPct: 1 }).ok).toBe(false);
-    expect(create({ name: "X", template: "rsi_reversao", timeframes: [], params: {}, stopGainPct: 3, stopLossPct: 1 }).ok).toBe(false);
+  it("store: rejeita código sem id", () => {
+    const { add } = useCustomStrategies.getState();
+    expect(add({ code: "", js: "module.exports.default = { onSignal: () => null };" }).ok).toBe(false);
   });
 
   it("invertCryptoAction troca LONG↔SHORT e BUY↔SELL", () => {
@@ -124,15 +87,10 @@ describe("custom strategies", () => {
   it("applyDirectionAndInvert: direção filtra o sinal natural, invert é o passo final", () => {
     const long: CryptoSignal = { action: "LONG", stopGainPct: 3, stopLossPct: 1, reason: "x" };
     const short: CryptoSignal = { action: "SHORT", stopGainPct: 3, stopLossPct: 1, reason: "x" };
-    // Direção "long" + invert: LONG natural passa o filtro e é invertido -> SHORT.
     expect(applyDirectionAndInvert(long, "long", true)?.action).toBe("SHORT");
-    // Direção "long" sem invert: LONG.
     expect(applyDirectionAndInvert(long, "long", false)?.action).toBe("LONG");
-    // Direção "long": SHORT natural é rejeitado.
     expect(applyDirectionAndInvert(short, "long", false)).toBeNull();
-    // Sem direção + invert: SHORT natural -> LONG.
     expect(applyDirectionAndInvert(short, "all", true)?.action).toBe("LONG");
-    // Sem sinal -> null.
     expect(applyDirectionAndInvert(null, "all", true)).toBeNull();
   });
 });
