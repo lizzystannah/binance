@@ -74,4 +74,23 @@ describe("discovery webhook contract", () => {
     expect(picks).toHaveLength(0);
     expect(error).toBeTruthy();
   });
+
+  it("extrai picks de output.state em string (formato real do agente)", () => {
+    const inner = [{
+      symbol: "PYTHUSDT",
+      direction: "UP",
+      confidence: 78,
+      thesis: "buyback",
+      catalysts: ["dao"],
+      risks: ["correção"],
+      invalidation: "suporte",
+    }];
+    const { picks, error } = parseDiscoveryResponse({
+      output: { state: JSON.stringify({ picks: inner, excluded: [] }), cities: ["PYTHUSDT"] },
+    });
+    expect(error).toBeUndefined();
+    expect(picks).toHaveLength(1);
+    expect(picks[0].symbol).toBe("PYTHUSDT");
+    expect(picks[0].confidence).toBe(78);
+  });
 });

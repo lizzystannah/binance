@@ -302,11 +302,16 @@ function findPicksArray(node: unknown, depth: number): unknown[] | null {
   if (typeof node === "object") {
     const o = node as Record<string, unknown>;
     if (Array.isArray(o.picks)) return o.picks as unknown[];
-    for (const k of ["output", "data", "result", "response", "body", "json", "content"]) {
-      if (k in o) {
-        const f = findPicksArray(o[k], depth + 1);
-        if (f) return f;
-      }
+    // Chaves prováveis primeiro, depois todas as restantes (ex.: o agente
+    // devolve { output: { state: "<json em string>", cities: [...] } }).
+    const keys = Object.keys(o);
+    const ordered = [
+      ...["output", "data", "result", "response", "body", "json", "content", "state"].filter((k) => k in o),
+      ...keys.filter((k) => !["output", "data", "result", "response", "body", "json", "content", "state", "picks"].includes(k)),
+    ];
+    for (const k of ordered) {
+      const f = findPicksArray(o[k], depth + 1);
+      if (f) return f;
     }
     return null;
   }

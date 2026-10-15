@@ -17,6 +17,17 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Prepara triagem: o nó Webhook embrulha o POST em\n// { headers, params, query, body }. O agente precisa de `candidates` direto.\nconst item = $input.first().json;\nconst body = item.body ?? item;\nreturn [{ candidates: Array.isArray(body.candidates) ? body.candidates : [] }];"
+      },
+      "id": "code-prepara",
+      "name": "Prepara triagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
         "model": "gpt-4o-mini",
         "options": {}
       },
@@ -92,7 +103,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ {\"picks\": $json.output.picks } }}",
+        "responseBody": "={{ $json }}",
         "options": {}
       },
       "id": "respond-top5",
@@ -103,7 +114,7 @@
     },
     {
       "parameters": {
-        "content": "## Discovery AI Ranking — como ligar\n\n1. Importa este JSON no N8N (Workflows → Import from file).\n2. Preenche as credenciais: **OpenAI** (ou troca o nó por OpenRouter/outro chat model gratuito) e **Tavily** (pesquisa web). Sem Tavily, o agente usa só os indicadores — remove o nó de ferramenta nesse caso.\n3. Ativa o workflow e copia o **Production URL** do nó `Webhook triagem`.\n4. Cola o URL na página **Monitorização → universo Novas → Agente IA (N8N)**, ou define `N8N_WEBHOOK_URL` no `.env` do servidor.\n\n### Contrato de dados\n\n**Entrada (POST da plataforma, gerada por `buildDiscoveryPayload` em `src/lib/discovery.ts`):**\n`{ version: 1, generatedAt, source: \"quantterm-triage\", universe: \"spot-usdt\", candidates: [{ symbol, price, change24hPct, quoteVolumeUsdt, mom7dPct, volumeSurgeX, rsi14, atrPct, nearHigh7d, triageScore, reasons[], futuresEligible }] }` (10 itens)\n\n**Saída (este workflow responde — lida por `parseDiscoveryResponse`):**\n`{ picks: [{ symbol, direction: UP|DOWN|NEUTRAL, confidence 0-100, thesis, catalysts[], risks[], invalidation }] }` (máx. 5)\n\nA plataforma mostra o botão **Trading** em cada pick apenas quando `futuresEligible` é verdadeiro; sem futuro listado, mostra só spot + valorização.",
+        "content": "## Discovery AI Ranking — como ligar\n\n1. Importa este JSON no N8N (Workflows → Import from file).\n2. Preenche as credenciais: **modelo de chat** (OpenAI ou, para custo zero, troca o nó por OpenRouter/outro gratuito) e **Tavily** (pesquisa web). Sem Tavily, o agente usa só os indicadores — remove o nó de ferramenta nesse caso.\n3. Ativa o workflow e copia o **Production URL** do nó `Webhook triagem`.\n4. Cola o URL na página **Monitorização → universo Novas → Agente IA (N8N)**, ou define `N8N_WEBHOOK_URL` no `.env` do servidor.\n\n### Fluxo\n\n`Webhook triagem` → `Prepara triagem` (extrai `body.candidates` do embrulho do webhook) → `Agente discovery` (modelo + pesquisa web + parser) → `Responder top-5`.\n\n### Contrato de dados\n\n**Entrada (POST da plataforma, gerada por `buildDiscoveryPayload` em `src/lib/discovery.ts`):**\n`{ version: 1, generatedAt, source: \"quantterm-triage\", universe: \"spot-usdt\", candidates: [{ symbol, price, change24hPct, quoteVolumeUsdt, mom7dPct, volumeSurgeX, rsi14, atrPct, nearHigh7d, triageScore, reasons[], futuresEligible }] }` (10 itens)\n\n**Saída (este workflow responde com o output do agente — a plataforma extrai `picks` de qualquer nível, incluindo JSON em string):**\n`{ output: { picks: [{ symbol, direction: UP|DOWN|NEUTRAL, confidence 0-100, thesis, catalysts[], risks[], invalidation }] } }` (máx. 5)\n\nA plataforma mostra o botão **Trading** em cada pick apenas quando `futuresEligible` é verdadeiro; sem futuro listado, mostra só spot + valorização.",
         "height": 560,
         "width": 420,
         "color": 4
@@ -117,6 +128,17 @@
   ],
   "connections": {
     "Webhook triagem": {
+      "main": [
+        [
+          {
+            "node": "Prepara triagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepara triagem": {
       "main": [
         [
           {
