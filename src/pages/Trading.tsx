@@ -4,6 +4,7 @@
 // Gráfico com ferramentas de desenho (linhas) e indicadores (EMA/BOLL/VOL/RSI/MACD).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -148,6 +149,13 @@ function FuturesChart({ klines, entryLines }: { klines: BinanceKline[]; entryLin
   const [ind, setInd] = useState<IndFlags>({ ema: true, boll: false, vol: true, rsi: false, macd: false });
 
   const dragRef = useRef<{ x: number; endOffset: number } | null>(null);
+  const drawDragRef = useRef<null | {
+    id: string;
+    grabIdx: number;
+    grabPrice: number;
+    orig: Drawing;
+  }>(null);
+  const [hoverDrawId, setHoverDrawId] = useState<string | null>(null);
   const pendingRef = useRef<{ idx: number; price: number } | null>(null);
   const layoutRef = useRef<null | {
     start: number;
@@ -247,9 +255,33 @@ function FuturesChart({ klines, entryLines }: { klines: BinanceKline[]; entryLin
     if (best >= 0) setDrawings((ds) => ds.filter((_, i) => i !== best));
   };
 
+  /** Desenho sob o cursor (para arrastar com a ferramenta cursor). */
+  const hitDrawing = (x: number, y: number): Drawing | null => {
+    const L = layoutRef.current;
+    if (!L) return null;
+    for (let i = drawings.length - 1; i >= 0; i--) {
+      const d = drawings[i];
+      let dist = Infinity;
+      if (d.type === "hline") dist = Math.abs(y - L.yOf(d.price1));
+      else if (d.type === "vline") dist = Math.abs(x - L.idxToX(d.idx1));
+      else dist = distToSegment(x, y, L.idxToX(d.idx1), L.yOf(d.price1), L.idxToX(d.idx2), L.yOf(d.price2));
+      if (dist < 10) return d;
+    }
+    return null;
+  };
+
   const onPointerDown = (e: React.PointerEvent) => {
     const { x, y } = rectXY(e);
     if (tool === "cursor") {
+      // Agarrar linha existente → arrastar; senão, pan do gráfico.
+      const hit = hitDrawing(x, y);
+      const d = toData(x, y);
+      if (hit && d) {
+        drawDragRef.current = { id: hit.id, grabIdx: d.idx, grabPrice: d.price, orig: hit };
+        setHoverDrawId(hit.id);
+        (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+        return;
+      }
       dragRef.current = { x: e.clientX, endOffset };
       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
       return;
@@ -284,17 +316,55 @@ function FuturesChart({ klines, entryLines }: { klines: BinanceKline[]; entryLin
   const onPointerMove = (e: React.PointerEvent) => {
     const { x, y } = rectXY(e);
     setHover({ x, y });
+    // Arrastar linha existente
+    if (tool === "cursor" && drawDragRef.current) {
+      const g = drawDragRef.current;
+      const d = toData(x, y);
+      if (d) {
+        const dIdx = d.idx - g.grabIdx;
+        const dPrice = d.price - g.grabPrice;
+        const o = g.orig;
+        let next: Drawing;
+        if (o.type === "hline") {
+          const p = o.price1 + dPrice;
+          next = { ...o, price1: p, price2: p };
+        } else if (o.type === "vline") {
+          const ix = o.idx1 + dIdx;
+          next = { ...o, idx1: ix, idx2: ix };
+        } else {
+          next = {
+            ...o,
+            idx1: o.idx1 + dIdx,
+            idx2: o.idx2 + dIdx,
+            price1: o.price1 + dPrice,
+            price2: o.price2 + dPrice,
+          };
+        }
+        setDrawings((ds) => ds.map((it) => (it.id === g.id ? next : it)));
+      }
+      return;
+    }
     if (tool === "cursor" && dragRef.current) {
       const d = dragRef.current;
       const targetX = lastCandleX(size.w, d.endOffset);
       const perCandle = Math.max(0.5, (targetX - PAD_L) / Math.max(1, viewCount - 0.5));
       const delta = Math.round((e.clientX - d.x) / perCandle);
       setEndOffset(Math.min(Math.max(0, d.endOffset + delta), maxOffset));
+      return;
+    }
+    // Sem arrasto: indicar linha agarrável (cursor move)
+    if (tool === "cursor" && !dragRef.current) {
+      const hit = hitDrawing(x, y);
+      setHoverDrawId((prev) => {
+        const id = hit ? hit.id : null;
+        return prev === id ? prev : id;
+      });
     }
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
     dragRef.current = null;
+    drawDragRef.current = null;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
 
@@ -682,7 +752,7 @@ function FuturesChart({ klines, entryLines }: { klines: BinanceKline[]; entryLin
     <div className="w-full h-full flex flex-col">
       {/* Barra de ferramentas */}
       <div className="flex flex-wrap items-center gap-1 px-1 pb-1 text-[10px] shrink-0">
-        <ToolButton active={tool === "cursor"} onClick={() => { setTool("cursor"); pendingRef.current = null; setPending(null); }} title="Cursor / mover">
+        <ToolButton active={tool === "cursor"} onClick={() => { setTool("cursor"); pendingRef.current = null; setPending(null); }} title="Cursor: arrastar o gráfico para mover; passar por cima de uma linha e arrastar para a mover">
           <MousePointer2 className="h-3 w-3" />
         </ToolButton>
         <ToolButton active={tool === "trend"} onClick={() => setTool("trend")} title="Linha de tendência (2 cliques)">
@@ -723,12 +793,16 @@ function FuturesChart({ klines, entryLines }: { klines: BinanceKline[]; entryLin
         ref={wrapRef}
         className={cn(
           "flex-1 min-h-0 bg-[#131722] rounded-sm overflow-hidden relative select-none touch-none",
-          tool === "cursor" ? "cursor-grab active:cursor-grabbing" : "cursor-crosshair"
+          tool === "cursor"
+            ? drawDragRef.current || hoverDrawId
+              ? "cursor-move"
+              : "cursor-grab active:cursor-grabbing"
+            : "cursor-crosshair"
         )}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerLeave={() => { dragRef.current = null; setHover(null); }}
+        onPointerLeave={() => { dragRef.current = null; drawDragRef.current = null; setHover(null); setHoverDrawId(null); }}
         onDoubleClick={() => { if (tool === "cursor") resetView(); }}
       >
         <canvas ref={canvasRef} />
@@ -749,8 +823,19 @@ function FuturesChart({ klines, entryLines }: { klines: BinanceKline[]; entryLin
 // ─── Página ───
 export default function Trading() {
   const paper = useFuturesPaper();
+  const [params] = useSearchParams();
+  const symbolFromUrl = (params.get("symbol") || "").toUpperCase();
+  const isValidUrlSymbol = /^[A-Z0-9]{2,20}USDT$/.test(symbolFromUrl);
 
-  const [symbol, setSymbol] = useState<string>(FUTURES_TRADING_SYMBOLS[0]);
+  const [symbol, setSymbol] = useState<string>(
+    isValidUrlSymbol ? symbolFromUrl : FUTURES_TRADING_SYMBOLS[0]
+  );
+
+  // Deep-link do Mercado / Monitorização: /trading?symbol=XXXUSDT
+  useEffect(() => {
+    if (isValidUrlSymbol && symbolFromUrl !== symbol) setSymbol(symbolFromUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbolFromUrl]);
   const [tf, setTf] = useState<string>(FUTURES_INTERVALS[2]);
   const [tickers, setTickers] = useState<BinanceTicker24h[]>([]);
   const [tickersNote, setTickersNote] = useState("A ligar à Binance Futures…");
@@ -780,15 +865,14 @@ export default function Trading() {
 
   const klinesCache = useRef<Record<string, BinanceKline[]>>({});
 
-  // Tickers polling (15s)
+  // Tickers polling (15s) — todos os futuros (curados primeiro na lista)
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
         const data = await fetchFuturesTickers24h();
         if (cancelled) return;
-        const allowed = new Set<string>(FUTURES_TRADING_SYMBOLS as unknown as string[]);
-        setTickers(data.filter((t) => allowed.has(t.symbol)));
+        setTickers(data.filter((t) => t.symbol.endsWith("USDT")));
         setTickersNote(`Binance Futures USDT-M · ${data.length} pares · ${new Date().toLocaleTimeString()}`);
       } catch (e) {
         if (!cancelled) setTickersNote(`Falha tickers: ${(e as Error).message}`);
@@ -1019,6 +1103,10 @@ export default function Trading() {
 
   const submit = (side: FuturesSide) => {
     setPreviewSide(side);
+    if (tickers.length > 0 && !tickers.some((t) => t.symbol === symbol)) {
+      toast.error(`${symbol} sem perpétuo USDT-M listado — só spot na Binance.`);
+      return;
+    }
     if (!Number.isFinite(qty) || qty <= 0) {
       toast.error("Indica um valor em USDT válido.");
       return;
@@ -1295,6 +1383,11 @@ export default function Trading() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="max-h-72">
+                {!(FUTURES_TRADING_SYMBOLS as readonly string[]).includes(symbol) && (
+                  <SelectItem key={symbol} value={symbol} className="font-mono text-xs">
+                    {symbol} · Perp
+                  </SelectItem>
+                )}
                 {FUTURES_TRADING_SYMBOLS.map((s) => (
                   <SelectItem key={s} value={s} className="font-mono text-xs">
                     {s} · Perp
@@ -1304,6 +1397,14 @@ export default function Trading() {
             </Select>
             <div className="font-mono flex items-center gap-2">
               <span className="text-lg font-bold text-white">${formatPrice(mark)}</span>
+              {tickers.length > 0 && !tickers.some((t) => t.symbol === symbol) && (
+                <span
+                  className="text-[10px] px-1.5 py-0.5 rounded-sm border border-warning/50 text-warning"
+                  title="Este par não tem perpétuo USDT-M listado na Binance — dados de fallback spot, ordens bloqueadas."
+                >
+                  SPOT · sem futuro
+                </span>
+              )}
               <span
                 title={tickersNote}
                 className={`text-[10px] px-1.5 py-0.5 rounded-sm border ${live ? "border-bull/50 text-bull" : "border-border text-muted-foreground"}`}

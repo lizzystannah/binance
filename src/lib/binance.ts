@@ -648,6 +648,32 @@ export async function fetchFuturesTickers24h(): Promise<BinanceTicker24h[]> {
   }
 }
 
+// ─── Elegibilidade futuros ──────────────────────────────────────────────
+// Um símbolo só pode ser operado na página Trading se tiver perpétuo USDT-M
+// listado (aparece no ticker 24h de futuros). Cache de 10 min.
+let futuresEligibleCache: { at: number; set: Set<string> } | null = null;
+
+export async function fetchFuturesEligibleSymbols(force = false): Promise<Set<string>> {
+  if (!force && futuresEligibleCache && Date.now() - futuresEligibleCache.at < 10 * 60_000) {
+    return futuresEligibleCache.set;
+  }
+  try {
+    const tickers = await fetchFuturesTickers24h();
+    const set = new Set(tickers.map((t) => t.symbol));
+    // Garante os curados mesmo se o fapi cair para o fallback spot.
+    for (const s of FUTURES_TRADING_SYMBOLS) set.add(s);
+    futuresEligibleCache = { at: Date.now(), set };
+    return set;
+  } catch {
+    return new Set<string>([...FUTURES_TRADING_SYMBOLS]);
+  }
+}
+
+export function isFuturesEligible(symbol: string, eligible: Set<string> | null): boolean {
+  if (!eligible) return (FUTURES_TRADING_SYMBOLS as readonly string[]).includes(symbol);
+  return eligible.has(symbol);
+}
+
 /** Mark price do perpétuo (premiumIndex). Fallback: last price spot. */
 export async function fetchFuturesMarkPrice(symbol: string): Promise<number> {
   const sym = symbol.trim().toUpperCase();

@@ -1,0 +1,191 @@
+{
+  "name": "Discovery AI Ranking (QuantTerm triage → top-5)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "discovery-triage",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-triage",
+      "name": "Webhook triagem",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "quantterm-discovery-triage"
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {}
+      },
+      "id": "openai-chat",
+      "name": "OpenAI chat",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [560, 120],
+      "credentials": {
+        "openAiApi": {
+          "id": "",
+          "name": "OpenAI (preencher no N8N)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.generatedAt }}-discovery",
+        "contextWindowLength": 20
+      },
+      "id": "memory-window",
+      "name": "Memória sessão",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [560, 220]
+    },
+    {
+      "parameters": {
+        "options": {
+          "maxResults": 5
+        }
+      },
+      "id": "tool-tavily",
+      "name": "Pesquisa web (Tavily)",
+      "type": "@n8n/n8n-nodes-langchain.toolTavilySearch",
+      "typeVersion": 1,
+      "position": [560, 420],
+      "credentials": {
+        "tavilyApi": {
+          "id": "",
+          "name": "Tavily (preencher no N8N)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchema": "{\"type\":\"object\",\"properties\":{\"picks\":{\"type\":\"array\",\"maxItems\":5,\"items\":{\"type\":\"object\",\"properties\":{\"symbol\":{\"type\":\"string\"},\"direction\":{\"type\":\"string\",\"enum\":[\"UP\",\"DOWN\",\"NEUTRAL\"]},\"confidence\":{\"type\":\"number\"},\"thesis\":{\"type\":\"string\"},\"catalysts\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"risks\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"invalidation\":{\"type\":\"string\"}},\"required\":[\"symbol\",\"direction\",\"confidence\",\"thesis\"]}}}},\"required\":[\"picks\"]}"
+      },
+      "id": "output-parser",
+      "name": "Parser top-5",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [560, 520]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=És um analista quantitativo conservador de criptomoedas com acesso à internet.\n\nRecebes a triagem da plataforma QuantTerm (JSON): {{ $json.candidates.length }} candidatas spot USDT com indicadores técnicos (momentum 7d, surge de volume, RSI, ATR, proximidade da máxima, elegibilidade a futuros).\n\nTarefa:\n1. Para cada candidata, pesquisa notícias recentes (listagens, parcerias, upgrades, unlocks de tokens, hacks, ações regulatórias).\n2. Cruza o sinal técnico com o contexto: confirma, atenua ou rejeita cada candidata.\n3. Devolve NO MÁXIMO 5 picks ordenadas por convicção de VALORIZAÇÃO, no schema do parser.\n\nRegras:\n- Sê cético com pumps sem catalisador (baixo score de confiança).\n- Unlocks/hacks/regulação negativa → direction DOWN ou excluir.\n- confidence é convicção 0-100, nunca garantia.\n- thesis curta (1-2 frases), catalysts e risks objetivos, invalidation = o que anula a tese.\n\nCandidatas:\n{{ JSON.stringify($json.candidates) }}",
+        "options": {
+          "systemMessage": "Analista quantitativo conservador. Responde SEMPRE no schema JSON do parser, sem texto fora do schema.",
+          "maxIterations": 8,
+          "returnIntermediateSteps": false
+        }
+      },
+      "id": "ai-agent",
+      "name": "Agente discovery",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [820, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"picks\": $json.output.picks } }}",
+        "options": {}
+      },
+      "id": "respond-top5",
+      "name": "Responder top-5",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1060, 300]
+    },
+    {
+      "parameters": {
+        "content": "## Discovery AI Ranking — como ligar\n\n1. Importa este JSON no N8N (Workflows → Import from file).\n2. Preenche as credenciais: **OpenAI** (ou troca o nó por OpenRouter/outro chat model gratuito) e **Tavily** (pesquisa web). Sem Tavily, o agente usa só os indicadores — remove o nó de ferramenta nesse caso.\n3. Ativa o workflow e copia o **Production URL** do nó `Webhook triagem`.\n4. Cola o URL na página **Monitorização → universo Novas → Agente IA (N8N)**, ou define `N8N_WEBHOOK_URL` no `.env` do servidor.\n\n### Contrato de dados\n\n**Entrada (POST da plataforma, gerada por `buildDiscoveryPayload` em `src/lib/discovery.ts`):**\n`{ version: 1, generatedAt, source: \"quantterm-triage\", universe: \"spot-usdt\", candidates: [{ symbol, price, change24hPct, quoteVolumeUsdt, mom7dPct, volumeSurgeX, rsi14, atrPct, nearHigh7d, triageScore, reasons[], futuresEligible }] }` (10 itens)\n\n**Saída (este workflow responde — lida por `parseDiscoveryResponse`):**\n`{ picks: [{ symbol, direction: UP|DOWN|NEUTRAL, confidence 0-100, thesis, catalysts[], risks[], invalidation }] }` (máx. 5)\n\nA plataforma mostra o botão **Trading** em cada pick apenas quando `futuresEligible` é verdadeiro; sem futuro listado, mostra só spot + valorização.",
+        "height": 560,
+        "width": 420,
+        "color": 4
+      },
+      "id": "sticky-setup",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [120, 80]
+    }
+  ],
+  "connections": {
+    "Webhook triagem": {
+      "main": [
+        [
+          {
+            "node": "Agente discovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI chat": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agente discovery",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Memória sessão": {
+      "ai_memory": [
+        [
+          {
+            "node": "Agente discovery",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pesquisa web (Tavily)": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente discovery",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parser top-5": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Agente discovery",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente discovery": {
+      "main": [
+        [
+          {
+            "node": "Responder top-5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

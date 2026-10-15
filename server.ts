@@ -193,6 +193,45 @@ async function main() {
     }
   });
 
+  // ── Discovery IA (triagem → N8N / OpenAI) ─────────────────────────────────
+  // O frontend envia os 10 candidatos da triagem; o servidor reencaminha para
+  // o webhook do N8N (evita CORS e mantém o URL fora do bundle) e devolve o
+  // top-5 do agente. Nada aqui executa ordens — só leitura e ranking.
+  app.post("/api/discovery/n8n-send", async (req, res) => {
+    try {
+      const body = req.body || {};
+      const webhookUrl = String(body.webhookUrl || process.env.N8N_WEBHOOK_URL || "").trim();
+      const payload = body.payload;
+      if (!/^https?:\/\/.{4,}/.test(webhookUrl)) {
+        return res.status(400).json({ error: "Webhook do N8N em falta. Cola o URL na página Monitorização ou define N8N_WEBHOOK_URL no servidor." });
+      }
+      if (!payload || !Array.isArray((payload as { candidates?: unknown[] }).candidates)) {
+        return res.status(400).json({ error: "Payload inválido: esperava { payload: { candidates: [...] } }." });
+      }
+      const r = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(180_000),
+      });
+      const text = await r.text();
+      let data: unknown = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = { raw: text.slice(0, 2000) };
+      }
+      if (!r.ok) {
+        return res.status(502).json({ error: `N8N respondeu ${r.status}. Verifica o workflow e o webhook.`, data });
+      }
+      res.json({ success: true, data });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[Discovery] n8n-send error:", msg);
+      res.status(502).json({ error: `Falha ao contactar o N8N: ${msg}` });
+    }
+  });
+
   // ── API 404 (impede fallback HTML do SPA) ──────────────────────────────────
   app.use("/api", (req, res) => {
     console.warn(`[HTTP] 404 - API Route not found: ${req.method} ${req.path}`);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -6,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   fetchAllTickers24h,
+  fetchFuturesEligibleSymbols,
   formatPrice,
   formatUsdt,
   mostTraded,
@@ -13,15 +15,18 @@ import {
   topMovers,
   type BinanceTicker24h,
 } from "@/lib/binance";
-import { ArrowDown, ArrowUp, CandlestickChart, Flame, RefreshCw, Search, Sparkles, AlertTriangle } from "lucide-react";
+import { ArrowDown, ArrowUp, CandlestickChart, Flame, RefreshCw, Search, Sparkles, AlertTriangle, ArrowLeftRight } from "lucide-react";
 
-function TickerRow({ t }: { t: BinanceTicker24h }) {
+function TickerRow({ t, futuresEligible }: { t: BinanceTicker24h; futuresEligible: boolean }) {
   const up = t.priceChangePercent >= 0;
   return (
-    <div className="w-full grid grid-cols-[1fr_auto_auto] md:grid-cols-[1.2fr_repeat(4,auto)] items-center gap-3 px-3 py-2 text-left text-xs border-b border-border/30">
+    <div className="w-full grid grid-cols-[1fr_auto_auto_auto] md:grid-cols-[1.2fr_repeat(4,auto)_auto] items-center gap-3 px-3 py-2 text-left text-xs border-b border-border/30">
       <span className="font-bold text-white font-mono">
         {t.symbol.replace("USDT", "")}
         <span className="text-muted-foreground font-normal">/USDT</span>
+        {futuresEligible && (
+          <span className="ml-1.5 text-[9px] px-1 rounded bg-primary/15 text-primary font-sans font-bold">FUT</span>
+        )}
       </span>
       <span className="font-mono text-white text-right">${formatPrice(t.lastPrice)}</span>
       <span className={`font-mono text-right flex items-center gap-1 ${up ? "text-bull" : "text-bear"}`}>
@@ -30,15 +35,29 @@ function TickerRow({ t }: { t: BinanceTicker24h }) {
       </span>
       <span className="hidden md:block font-mono text-muted-foreground text-right">{formatUsdt(t.quoteVolume)}</span>
       <span className="hidden md:block font-mono text-muted-foreground text-right">{t.count.toLocaleString()} trades</span>
+      {futuresEligible ? (
+        <Button asChild size="sm" variant="outline" className="h-6 text-[10px] px-2" title={`Abrir ${t.symbol} no gráfico de futuros`}>
+          <Link to={`/trading?symbol=${t.symbol}`}>
+            <ArrowLeftRight className="h-3 w-3 mr-1" /> Trading
+          </Link>
+        </Button>
+      ) : (
+        <span
+          className="text-[10px] text-muted-foreground/60 border border-border/40 rounded px-2 py-1 cursor-not-allowed"
+          title="Sem perpétuo USDT-M listado — só spot na Binance"
+        >
+          Spot
+        </span>
+      )}
     </div>
   );
 }
 
-function TickerList({ items, empty }: { items: BinanceTicker24h[]; empty: string }) {
+function TickerList({ items, empty, eligible }: { items: BinanceTicker24h[]; empty: string; eligible: Set<string> }) {
   if (items.length === 0) return <p className="text-xs text-muted-foreground p-4">{empty}</p>;
   return (
     <div className="divide-y divide-border/30">
-      {items.map((t) => <TickerRow key={t.symbol} t={t} />)}
+      {items.map((t) => <TickerRow key={t.symbol} t={t} futuresEligible={eligible.has(t.symbol)} />)}
     </div>
   );
 }
@@ -46,6 +65,7 @@ function TickerList({ items, empty }: { items: BinanceTicker24h[]; empty: string
 // Binance-only: Mercado (tendência + novas criptos). Só leitura, dados públicos.
 export default function Market() {
   const [tickers, setTickers] = useState<BinanceTicker24h[]>([]);
+  const [eligible, setEligible] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
@@ -55,8 +75,9 @@ export default function Market() {
     setLoading(true);
     setError("");
     try {
-      const all = await fetchAllTickers24h();
+      const [all, fut] = await Promise.all([fetchAllTickers24h(), fetchFuturesEligibleSymbols()]);
       setTickers(all);
+      setEligible(fut);
       setLastUpdate(Date.now());
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Falha ao carregar mercado da Binance.");
@@ -133,15 +154,15 @@ export default function Market() {
           <TabsContent value="tendencias" className="m-0 mt-4 grid md:grid-cols-2 gap-3">
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-xs uppercase text-bull">Top altas 24h</CardTitle></CardHeader>
-              <CardContent className="p-0"><TickerList items={gainers} empty="Sem dados." /></CardContent>
+              <CardContent className="p-0"><TickerList items={gainers} empty="Sem dados." eligible={eligible} /></CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-xs uppercase text-bear">Top quedas 24h</CardTitle></CardHeader>
-              <CardContent className="p-0"><TickerList items={losers} empty="Sem dados." /></CardContent>
+              <CardContent className="p-0"><TickerList items={losers} empty="Sem dados." eligible={eligible} /></CardContent>
             </Card>
             <Card className="md:col-span-2">
               <CardHeader className="pb-2"><CardTitle className="text-xs uppercase text-primary">Maior volume 24h</CardTitle></CardHeader>
-              <CardContent className="p-0"><TickerList items={traded} empty="Sem dados." /></CardContent>
+              <CardContent className="p-0"><TickerList items={traded} empty="Sem dados." eligible={eligible} /></CardContent>
             </Card>
           </TabsContent>
 
@@ -154,7 +175,7 @@ export default function Market() {
                 <p className="text-[10px] text-muted-foreground px-3 py-2 border-b border-border/30">
                   A Binance não expõe data de listagem na API pública — listamos pares de menor quoteVolume como proxy honesto de low-cap/novos.
                 </p>
-                <TickerList items={recents} empty="Sem dados." />
+                <TickerList items={recents} empty="Sem dados." eligible={eligible} />
               </CardContent>
             </Card>
           </TabsContent>
@@ -165,7 +186,7 @@ export default function Market() {
               <CardContent className="p-0">
                 {loading && tickers.length === 0
                   ? <p className="text-xs text-muted-foreground p-4">A carregar mercado da Binance…</p>
-                  : <TickerList items={filtered} empty="Nenhum par encontrado." />}
+                  : <TickerList items={filtered} empty="Nenhum par encontrado." eligible={eligible} />}
               </CardContent>
             </Card>
           </TabsContent>
