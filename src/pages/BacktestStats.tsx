@@ -79,6 +79,7 @@ export default function BacktestStats() {
     const worst = trades.reduce((m, t) => (t.pnl < m ? t.pnl : m), Infinity);
     const fees = trades.reduce((s, t) => s + (t.feesPaid ?? 0), 0);
     const funding = trades.reduce((s, t) => s + (t.fundingPaid ?? 0), 0);
+    const spread = trades.reduce((s, t) => s + (t.spreadPaid ?? 0), 0);
     const avgBars = trades.length ? trades.reduce((s, t) => s + (t.exitIndex - t.entryIndex), 0) / trades.length : 0;
 
     // Sequências
@@ -106,7 +107,7 @@ export default function BacktestStats() {
     return {
       r, trades, wins: wins.length, losses: losses.length,
       grossProfit, grossLoss, avgWin, avgLoss, profitFactor, expectancy,
-      best, worst, fees, funding, avgBars,
+      best, worst, fees, funding, avgBars, spread,
       maxW, maxL, byReason: [...byReason.entries()], long: bySide("LONG"), short: bySide("SHORT"),
       returnPct: (r.pnl / run.capital) * 100,
     };
@@ -154,6 +155,9 @@ export default function BacktestStats() {
                 <span className="text-muted-foreground">Lev: <span className="text-foreground font-mono">{run.leverage}x</span></span>
                 <span className="text-muted-foreground">Capital: <span className="text-foreground font-mono">${run.capital}</span></span>
                 <span className="text-muted-foreground">Stake: <span className="text-foreground font-mono">${run.stakePerEntry}</span></span>
+                {run.spreadPct !== undefined && run.spreadPct > 0 && (
+                  <span className="text-muted-foreground">Spread: <span className="text-foreground font-mono">{run.spreadPct.toFixed(3)}%</span></span>
+                )}
                 <span className="ml-auto text-muted-foreground">{new Date(run.ranAt).toLocaleString()}</span>
               </CardContent>
             </Card>
@@ -177,6 +181,7 @@ export default function BacktestStats() {
               <Kpi label="Máx perdas seg." value={String(stats.maxL)} tone="bear" />
               <Kpi label="Duração média" value={`${stats.avgBars.toFixed(1)} velas`} />
               <Kpi label="Taxas totais" value={`$${stats.fees.toFixed(2)}`} tone="muted" />
+              <Kpi label="Spread" value={`$${stats.spread.toFixed(2)}`} tone="muted" />
               <Kpi label="Funding" value={`$${stats.funding.toFixed(2)}`} tone="muted" />
             </div>
 
@@ -215,8 +220,9 @@ export default function BacktestStats() {
                 <CardContent className="p-3 flex items-start gap-2 text-[11px] text-muted-foreground">
                   <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning mt-0.5" />
                   <span>
-                    Backtest sobre velas fechadas, sem lookahead, SL antes de TP na mesma vela, com taxas e slippage.
-                    Ainda <strong>não simula liquidação</strong> nem funding real — resultados em leverage alto são otimistas.
+                    Backtest sobre velas fechadas, sem lookahead, SL antes de TP na mesma vela, com taxas,
+                    spread bid-ask e slippage. Ainda <strong>não simula liquidação</strong> nem funding real
+                    — resultados em leverage alto são otimistas.
                     {stats.r.totalTrades < 30 && " Amostra <30 trades: pouco significativa."}
                   </span>
                 </CardContent>

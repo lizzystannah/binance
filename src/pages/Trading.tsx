@@ -17,6 +17,8 @@ import {
   ArrowDown,
   ArrowUp,
   BarChart3,
+  ChevronDown,
+  ChevronUp,
   Eraser,
   FlaskConical,
   Maximize2,
@@ -41,6 +43,7 @@ import {
   FUTURES_TRADING_SYMBOLS,
   fetchFuturesKlines,
   fetchFuturesMarkPrice,
+  fetchFuturesSpreadPct,
   fetchFuturesTickers24h,
   formatPrice,
   futuresLiqPrice,
@@ -93,6 +96,62 @@ const PAD_T = 14;
 const PAD_B = 22;
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+/** Campo numérico com setinhas de +1/-1 (para não ter de escrever sempre). */
+function NumStepper({
+  value,
+  onChange,
+  step = 1,
+  min,
+  max,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  step?: number;
+  min?: number;
+  max?: number;
+  disabled?: boolean;
+}) {
+  const bump = (dir: number) => {
+    const n = parseFloat(value);
+    let v = (Number.isFinite(n) ? n : 0) + dir * step;
+    if (min !== undefined) v = Math.max(min, v);
+    if (max !== undefined) v = Math.min(max, v);
+    onChange(String(Math.round(v * 1000) / 1000));
+  };
+  return (
+    <div className="flex mt-1">
+      <Input
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-8 text-xs font-mono rounded-r-none"
+        inputMode="decimal"
+      />
+      <div className={`flex flex-col overflow-hidden rounded-r border border-l-0 border-border ${disabled ? "opacity-40" : ""}`}>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => bump(1)}
+          className="h-4 w-6 flex items-center justify-center bg-secondary/60 hover:bg-secondary text-muted-foreground"
+          title="+1"
+        >
+          <ChevronUp className="h-3 w-3" />
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => bump(-1)}
+          className="h-4 w-6 flex items-center justify-center bg-secondary/60 hover:bg-secondary text-muted-foreground border-t border-border"
+          title="−1"
+        >
+          <ChevronDown className="h-3 w-3" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Posição X do centro da última vela visível.
@@ -1391,12 +1450,15 @@ export default function Trading() {
           return sig;
         },
       };
+      // Spread bid-ask real do ativo (custo de transação; 0 se indisponível).
+      const spreadPct = await fetchFuturesSpreadPct(symbol).catch(() => 0);
       const res = runCryptoBacktest(closed, wrapped, {
         capital,
         stakePerEntry: stake,
         mode: "futures",
         leverage: lev,
         strategyParams: paramsv,
+        spreadPct,
       });
       setLastRun({
         id: `${Date.now()}`,
@@ -1409,6 +1471,7 @@ export default function Trading() {
         capital,
         stakePerEntry: stake,
         leverage: lev,
+        spreadPct,
         result: res,
         times: res.trades.map((t) => ({
           entry: closed[t.entryIndex]?.t ?? 0,
@@ -1797,22 +1860,22 @@ export default function Trading() {
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="text-[9px] text-muted-foreground uppercase font-bold">Valor de entrada $</label>
-                    <Input value={btAmount} onChange={(e) => setBtAmount(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="decimal" />
+                    <NumStepper value={btAmount} onChange={setBtAmount} min={1} />
                   </div>
                   <div>
                     <label className="text-[9px] text-muted-foreground uppercase font-bold">Alavancagem x</label>
-                    <Input value={btLeverage} onChange={(e) => setBtLeverage(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="numeric" />
+                    <NumStepper value={btLeverage} onChange={setBtLeverage} min={1} max={125} />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="text-[9px] text-muted-foreground uppercase font-bold">Stop-gain %</label>
-                    <Input value={btTp} disabled={btUseStratStops} onChange={(e) => setBtTp(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="decimal" />
+                    <NumStepper value={btTp} onChange={setBtTp} min={0.1} disabled={btUseStratStops} />
                   </div>
                   <div>
                     <label className="text-[9px] text-muted-foreground uppercase font-bold">Stop-loss %</label>
-                    <Input value={btSl} disabled={btUseStratStops} onChange={(e) => setBtSl(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="decimal" />
+                    <NumStepper value={btSl} onChange={setBtSl} min={0.1} disabled={btUseStratStops} />
                   </div>
                 </div>
 
@@ -1823,7 +1886,7 @@ export default function Trading() {
 
                 <div>
                   <label className="text-[9px] text-muted-foreground uppercase font-bold">Capital inicial $</label>
-                  <Input value={btCapital} onChange={(e) => setBtCapital(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="decimal" />
+                  <NumStepper value={btCapital} onChange={setBtCapital} min={1} />
                 </div>
 
                 {btError && <p className="text-[11px] text-rose-400">{btError}</p>}

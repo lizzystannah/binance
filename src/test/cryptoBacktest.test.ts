@@ -119,4 +119,24 @@ describe("cryptoBacktest — honestidade", () => {
     expect(t.feesPaid).toBeGreaterThan(0);
     expect(t.fundingPaid).toBe(0);
   });
+
+  it("spread bid-ask aumenta o custo (pnl pior) e é registado por trade", () => {
+    const killer: CryptoSpotStrategy = {
+      ...alwaysBuy,
+      id: "test_spread",
+      onSignal: () => ({ action: "BUY", stopGainPct: 1, stopLossPct: 1, reason: "test" }),
+    };
+    const klines = [
+      ...Array.from({ length: 6 }, (_, i) => candle(i, 100, 100.1, 99.9, 100)),
+      candle(7, 100, 101, 99, 100.5),
+      candle(8, 100.5, 101, 100, 100.5),
+      candle(9, 100.5, 101, 100, 100.5),
+      candle(10, 100.5, 101, 100, 100.5),
+    ];
+    const base = { capital: 10000, stakePerEntry: 1000, feeRate: 0, slippageRate: 0 };
+    const noSpread = runCryptoBacktest(klines, killer, base);
+    const withSpread = runCryptoBacktest(klines, killer, { ...base, spreadPct: 0.05, leverage: 5 });
+    expect(withSpread.trades[0].spreadPaid).toBeGreaterThan(0);
+    expect(withSpread.trades[0].pnl).toBeLessThan(noSpread.trades[0].pnl);
+  });
 });

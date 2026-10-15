@@ -22,6 +22,8 @@ export interface CryptoBacktestOpts {
   leverage?: number;
   /** Custo de funding por trade em % do notional (ex: 0.01 = 0.01%). Default 0. */
   fundingRatePct?: number;
+  /** Spread bid-ask do ativo em % (custo de transação real). Default 0. */
+  spreadPct?: number;
   /** Parâmetros da estratégia (os mesmos de `strategy.params[]`). Vão em `ctx.params`. */
   strategyParams?: Record<string, number | string>;
 }
@@ -46,6 +48,8 @@ export interface CryptoBacktestTrade {
   feesPaid: number;
   /** Custo de funding estimado para o trade. */
   fundingPaid: number;
+  /** Custo do spread bid-ask (ida e volta), já com leverage. */
+  spreadPaid: number;
   reason: "TAKE_PROFIT" | "STOP_LOSS" | "STRATEGY_EXIT" | "END_OF_DATA" | "TRAILING";
 }
 
@@ -74,6 +78,7 @@ export function runCryptoBacktest(
   const mode: RobotMode = opts.mode ?? "futures";
   const leverage = mode === "futures" ? Math.min(Math.max(opts.leverage ?? 1, 1), 125) : 1;
   const fundingPct = opts.fundingRatePct ?? 0;
+  const spreadPct = opts.spreadPct ?? 0;
   const empty: CryptoBacktestResult = {
     trades: [],
     totalTrades: 0,
@@ -129,11 +134,13 @@ export function runCryptoBacktest(
         : open.entry * open.qty + (open.entry - exitPrice) * open.qty;
     const exitFee = exitPrice * open.qty * feeRate;
     const fundingCost = (notional * fundingPct) / 100;
+    // Spread bid-ask (ida e volta) sobre o notional alavancado.
+    const spreadCost = ((notional * spreadPct) / 100) * leverage;
     let pnl: number;
     if (open.side === "LONG") {
-      pnl = (proceeds - notional - open.entryFee - exitFee) * leverage - fundingCost;
+      pnl = (proceeds - notional - open.entryFee - exitFee) * leverage - fundingCost - spreadCost;
     } else {
-      pnl = ((open.entry - exitPrice) * open.qty - open.entryFee - exitFee) * leverage - fundingCost;
+      pnl = ((open.entry - exitPrice) * open.qty - open.entryFee - exitFee) * leverage - fundingCost - spreadCost;
     }
     equity += pnl;
     markDd(equity);
@@ -152,6 +159,7 @@ export function runCryptoBacktest(
       trailingPct: open.trailingPct,
       feesPaid: (open.entryFee + exitFee) * leverage,
       fundingPaid: fundingCost,
+      spreadPaid: spreadCost,
       reason,
     });
     open = null;
@@ -208,6 +216,7 @@ export function runCryptoBacktest(
             lastClose: closes[i],
             mode,
             params: opts.strategyParams,
+            fundingRatePct: fundingPct,
           };
           let sig: ReturnType<CryptoStrategy["onSignal"]> = null;
           try {
@@ -232,6 +241,7 @@ export function runCryptoBacktest(
         lastClose: closes[i],
         mode,
         params: opts.strategyParams,
+        fundingRatePct: fundingPct,
       };
       let sig: ReturnType<CryptoStrategy["onSignal"]> = null;
       try {

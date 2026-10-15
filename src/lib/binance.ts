@@ -698,6 +698,38 @@ export function isFuturesEligible(symbol: string, eligible: Set<string> | null):
   return eligible.has(symbol);
 }
 
+// ─── Spread (bid-ask) por ativo ─────────────────────────────────────────────
+// A Binance Futures USDT-M não cobra "margem" por entrada; cobra taxa taker e
+// tem um SPREAD entre bid e ask. É esse spread que faz o preço ter de andar um
+// pouco antes de o trade ficar positivo (breakeven). Lemos o spread real do
+// bookTicker e, se falhar, usamos um valor conservador por liquidez.
+const spreadCache = new Map<string, { at: number; pct: number }>();
+
+export async function fetchFuturesSpreadPct(symbol: string): Promise<number> {
+  const sym = symbol.trim().toUpperCase();
+  const hit = spreadCache.get(sym);
+  if (hit && Date.now() - hit.at < 60_000) return hit.pct;
+  try {
+    const raw = await futuresGet<{ bidPrice: string; askPrice: string }>(
+      `/fapi/v1/ticker/bookTicker?symbol=${encodeURIComponent(sym)}`
+    );
+    const bid = parseFloat(raw.bidPrice);
+    const ask = parseFloat(raw.askPrice);
+    const mid = (bid + ask) / 2;
+    const pct = mid > 0 && ask > bid ? ((ask - bid) / mid) * 100 : 0;
+    spreadCache.set(sym, { at: Date.now(), pct });
+    return pct;
+  } catch {
+    // Fallback conservador por liquidez (spread típico em horário normal).
+    const fallback = sym.startsWith("BTC")
+      ? 0.01
+      : ["ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"].includes(sym)
+        ? 0.02
+        : 0.04;
+    return fallback;
+  }
+}
+
 /** Mark price do perpétuo (premiumIndex). Fallback: last price spot. */
 export async function fetchFuturesMarkPrice(symbol: string): Promise<number> {
   const sym = symbol.trim().toUpperCase();

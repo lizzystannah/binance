@@ -59,79 +59,126 @@ function DocsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: b
             <h3 className="font-bold text-white mb-1">1. Duas formas de criar</h3>
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
               <li><strong className="text-foreground">Botão “Nova estratégia”</strong> (recomendado): escolhe um template auditado (RSI, EMA, Bollinger), ajusta parâmetros, TP/SL e timeframes. Fica guardada e funciona em robôs e backtest como as embutidas.</li>
-              <li><strong className="text-foreground">Em código:</strong> objeto em <code className="font-mono text-[12px]">src/lib/cryptoStrategies.ts</code> registado em <code className="font-mono text-[12px]">CRYPTO_STRATEGIES</code> (ver secção 2).</li>
+              <li><strong className="text-foreground">Em código:</strong> objeto em <code className="font-mono text-[12px]">src/lib/cryptoStrategies.ts</code> registado em <code className="font-mono text-[12px]">CRYPTO_STRATEGIES</code> (ver secção 2). É este formato que deves enviar a uma IA para gerar estratégias.</li>
             </ul>
           </section>
 
           <section>
             <h3 className="font-bold text-white mb-1">2. Interface em código (CryptoStrategy)</h3>
-            <pre className="bg-background/60 border border-border/50 rounded p-3 text-[11px] font-mono overflow-x-auto">{`{
+            <pre className="bg-background/60 border border-border/50 rounded p-3 text-[11px] font-mono overflow-x-auto">{`import { rsi } from "@/lib/indicators"; // só se usares indicadores
+import type { CryptoStrategy } from "@/lib/cryptoStrategies";
+
+export const minhaEstrategia: CryptoStrategy = {
   id: "minha_estrategia",        // único, minúsculas + _
   name: "Nome visível",
   description: "O que faz, em 1 frase",
-  minCandles: 60,                // velas fechadas mínimas
+  category: "auto",              // "auto" (automático)
+  minCandles: 60,                // velas fechadas mínimas exigidas
   defaults: { stopGainPct: 3, stopLossPct: 1.2, trailingPct: 1 },
   timeframes: ["15m", "1h"],     // subset de 1m/5m/15m/1h/4h
   modes: ["futures"],            // sempre ["futures"]
   indicators: ["EMA20/50", "RSI14"],
-  params: [                      // parâmetros ajustáveis (info na UI)
+  params: [                      // parâmetros ajustáveis (chegam em ctx.params)
     { key: "rsiLen", label: "Período RSI", type: "number",
-      default: 14, min: 2, max: 50, step: 1,
-      hint: "Janela do RSI" },
+      default: 14, min: 2, max: 50, step: 1, hint: "Janela do RSI" },
   ],
-  onSignal: (ctx) => { /* ... */ return null; },
-}`}</pre>
+  onSignal: (ctx) => {           // devolve CryptoSignal | null
+    return null;
+  },
+};`}</pre>
           </section>
 
           <section>
-            <h3 className="font-bold text-white mb-1">3. O contexto (CryptoContext)</h3>
+            <h3 className="font-bold text-white mb-1">3. As velas (o mais importante) — bem catalogadas</h3>
+            <p className="text-[13px] text-muted-foreground mb-1">
+              <code className="font-mono">ctx.klines</code> é um array <strong>cronológico ascendente</strong>
+              (índice 0 = mais antiga, último índice = mais recente) de objetos:
+            </p>
+            <pre className="bg-background/60 border border-border/50 rounded p-3 text-[11px] font-mono overflow-x-auto">{`interface CryptoCandle {
+  t: number;  // open time da vela, em MILISSEGUNDOS (epoch)
+  o: number;  // open
+  h: number;  // high (máxima)
+  l: number;  // low  (mínima)
+  c: number;  // close (fecho)
+  v: number;  // volume (ativo base)
+}
+// Aliases no contexto:
+ctx.closes      // number[]  -> só os fechos, na mesma ordem
+ctx.lastClose   // number    -> fecho da ÚLTIMA vela FECHADA`}</pre>
+            <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5 mt-2">
+              <li><strong className="text-foreground">Só velas FECHADAS.</strong> A vela em formação nunca entra em <code className="font-mono">ctx.klines</code>.</li>
+              <li><strong className="text-foreground">Última vela fechada:</strong> <code className="font-mono">ctx.klines[ctx.klines.length - 1]</code> (fechou agora).</li>
+              <li><strong className="text-foreground">Penúltima vela fechada:</strong> <code className="font-mono">ctx.klines[ctx.klines.length - 2]</code>.</li>
+              <li><strong className="text-foreground">Vela de 60 min atrás:</strong> <code className="font-mono">ctx.klines[ctx.klines.length - 1 - (60 / minutosDoIntervalo)]</code>.</li>
+              <li>Converter <code className="font-mono">t</code> para minutos: <code className="font-mono">Math.floor(t / 60000)</code> (é ms, não segundos).</li>
+              <li>Toda a vela é a mesma unidade de preço do par (ex.: USDT). <code className="font-mono">h &gt;= max(o,c)</code> e <code className="font-mono">l &lt;= min(o,c)</code> sempre.</li>
+            </ul>
+          </section>
+
+          <section>
+            <h3 className="font-bold text-white mb-1">4. O contexto (CryptoContext)</h3>
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
               <li><code className="font-mono">symbol</code> — par, ex. <code className="font-mono">BTCUSDT</code></li>
-              <li><code className="font-mono">interval</code> — timeframe do robô</li>
-              <li><code className="font-mono">klines</code> — velas <strong>FECHADAS</strong> <code className="font-mono">{"{t,o,h,l,c,v}[]"}</code> (a vela em formação nunca entra)</li>
-              <li><code className="font-mono">closes</code> / <code className="font-mono">lastClose</code> — atalhos</li>
-              <li><code className="font-mono">mode</code> — sempre <code className="font-mono">"futures"</code> aqui</li>
-              <li><code className="font-mono">fundingRatePct</code> — funding atual; pular entradas com funding extremo</li>
+              <li><code className="font-mono">interval</code> — timeframe (<code className="font-mono">1m|5m|15m|1h|4h</code>)</li>
+              <li><code className="font-mono">klines</code>, <code className="font-mono">closes</code>, <code className="font-mono">lastClose</code> — ver secção 3</li>
+              <li><code className="font-mono">mode</code> — sempre <code className="font-mono">"futures"</code></li>
+              <li><code className="font-mono">params</code> — os teus <code className="font-mono">params[]</code> (usa <code className="font-mono">ctxNum(ctx,"rsiLen",14)</code> para ler com fallback)</li>
+              <li><code className="font-mono">fundingRatePct</code> — funding atual em % (pode ser <code className="font-mono">undefined</code>/0 quando não disponível; usa <code className="font-mono">?? 0</code> e trata como opcional)</li>
             </ul>
           </section>
 
           <section>
-            <h3 className="font-bold text-white mb-1">4. O sinal (CryptoSignal)</h3>
-            <pre className="bg-background/60 border border-border/50 rounded p-3 text-[11px] font-mono overflow-x-auto">{`// Entrar long na reversão do RSI
+            <h3 className="font-bold text-white mb-1">5. O sinal (CryptoSignal)</h3>
+            <pre className="bg-background/60 border border-border/50 rounded p-3 text-[11px] font-mono overflow-x-auto">{`// Exemplo: LONG na reversão do RSI (última vela FECHADA)
 if (ctx.klines.length < 60) return null;   // 1. guarda de amostra
+const last = ctx.klines[ctx.klines.length - 1];
 const r = rsi(ctx.closes, 14);
-const last = r[r.length - 1];
-if (last === null) return null;
-if (last < 30) return {                     // 2. sinal
-  action: "LONG",                           // "LONG" | "SHORT" | "EXIT" | "FLAT"
-  stopGainPct: 3,                           // 3. stops SEMPRE (obrigatórios)
+const rv = r[r.length - 1];
+if (rv === null) return null;               // indicador precisa de mais velas
+if (rv < 30) return {                        // 2. sinal
+  action: "LONG",                            // "LONG" | "SHORT" | "EXIT" | "FLAT"
+  stopGainPct: 3,                            // 3. stops SEMPRE (obrigatórios, > 0)
   stopLossPct: 1.2,
-  reason: "RSI sobrevendido",
-  confidence: 62,                           // opcional 0-100
-  trailingPct: 1,                           // opcional
+  reason: \`RSI sobrevendido (\${rv.toFixed(0)})\`, // texto curto p/ o registo
+  confidence: 62,                            // opcional 0-100
+  trailingPct: 1,                            // opcional (trailing % do pico)
+  atrStopMult: 1.5,                          // opcional (informativo)
+  volumeMult: last.v > 0 ? 1.8 : undefined,  // opcional (informativo)
 };
-return null;                                // 4. sem sinal = null`}</pre>
+return null;                                 // 4. sem sinal = null`}</pre>
           </section>
 
           <section>
-            <h3 className="font-bold text-white mb-1">5. Regras de ouro</h3>
+            <h3 className="font-bold text-white mb-1">6. Regras de ouro (evitam conflito com a plataforma)</h3>
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
-              <li>Só velas fechadas: usa <code className="font-mono">ctx.klines[ctx.klines.length - 1]</code> como última fechada.</li>
-              <li><code className="font-mono">stopGainPct</code> e <code className="font-mono">stopLossPct</code> são obrigatórios e &gt; 0.</li>
-              <li>Devolve <code className="font-mono">EXIT</code> para fechar, <code className="font-mono">FLAT</code>/<code className="font-mono">null</code> para ficar de fora.</li>
-              <li>Verifica a amostra mínima antes dos indicadores (RSI precisa de ~15+ velas).</li>
-              <li>Sem gestão de risco dentro da estratégia (martingale, dobras): o motor aplica stops da conta, cooldown e limites de posição.</li>
+              <li><strong className="text-foreground">Função pura:</strong> só uses <code className="font-mono">ctx</code>; nunca <code className="font-mono">Date.now()</code>, <code className="font-mono">fetch</code>, <code className="font-mono">Math.random</code> nem estado global. O mesmo código corre no backtest e no robô.</li>
+              <li>Só velas fechadas — nunca inventes a vela em formação.</li>
+              <li><code className="font-mono">action</code> só pode ser <code className="font-mono">LONG/SHORT/EXIT/FLAT</code>. <code className="font-mono">stopGainPct</code> e <code className="font-mono">stopLossPct</code> obrigatórios e &gt; 0.</li>
+              <li>Verifica sempre <code className="font-mono">ctx.klines.length &gt;= minCandles</code> antes de indicadores.</li>
+              <li>Sem martingale/dobras dentro da estratégia — a gestão de risco da conta (stops, limites) é responsabilidade do robô/motor, não do teu sinal.</li>
+              <li>Não lances exceções: se faltar dado, devolve <code className="font-mono">null</code>.</li>
             </ul>
           </section>
 
           <section>
-            <h3 className="font-bold text-white mb-1">6. Da estratégia ao robô ao backtest</h3>
+            <h3 className="font-bold text-white mb-1">7. Contrato do robô (opera pela estratégia, não por conta própria)</h3>
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
-              <li><strong>Criar robô:</strong> botão no card — nasce parado, copiando direção, timeframe e stops da estratégia. Ajusta capital, stake, leverage e liga na página Robôs.</li>
-              <li><strong>Ligar (Switch):</strong> marca a estratégia como <em>ligada</em> — é com ela que a página de Backtest corre.</li>
-              <li><strong>Inverter:</strong> troca todos os sinais da estratégia (LONG↔SHORT). Aplica-se ao backtest e é copiado para os robôs criados a partir dela. O card fica com um anel de aviso enquanto estiver invertido.</li>
-              <li><strong>Backtest:</strong> liga a estratégia e abre a página <strong>Trading</strong> em modo backtest. Na barra lateral direita defines valor de entrada, alavancagem, stop-gain, stop-loss e capital, e clicas em “Rodar backtesting”. O gráfico mostra cada trade: seta de entrada, realce da vela de entrada, caixa verde (entrada→TP) e vermelha (entrada→SL) da entrada até à saída, e losango onde fechou. Os números completos ficam na página <strong>Estatísticas</strong>.</li>
+              <li>O robô é criado <strong>a partir da estratégia</strong>: guarda o <code className="font-mono">strategyId</code> e executa <strong>exatamente</strong> o <code className="font-mono">onSignal</code> dessa estratégia.</li>
+              <li>O robô <strong>não gera entradas próprias</strong> — só abre/fecha quando a estratégia devolve um sinal. Direção, inversão, timeframe e stops são parâmetros do robô que <em>filtram/ajustam</em> o sinal, não o substituem.</li>
+              <li>O <strong>backtest</strong> corre o mesmo <code className="font-mono">onSignal</code> sobre velas fechadas, com o mesmo contrato — serve para validar a estratégia antes de a usar.</li>
+              <li><strong>Estado atual:</strong> o “Ligar” do robô valida e arma a configuração; a <em>execução automática ao vivo</em> é o próximo passo do motor — até lá, valida sempre pelo backtest.</li>
             </ul>
+          </section>
+
+          <section>
+            <h3 className="font-bold text-white mb-1">8. Checklist rápido para a IA</h3>
+            <p className="text-[12px] text-muted-foreground">
+              Pede à IA um objeto que cumpra: (1) <code className="font-mono">id</code> único e <code className="font-mono">modes:["futures"]</code>;
+              (2) <code className="font-mono">minCandles</code> coerente com os indicadores; (3) <code className="font-mono">onSignal(ctx)</code> que lê
+              <code className="font-mono"> ctx.klines</code> (só fechadas) e devolve <code className="font-mono">LONG/SHORT/EXIT/FLAT</code> com
+              <code className="font-mono"> stopGainPct</code>/<code className="font-mono">stopLossPct</code> &gt; 0, ou <code className="font-mono">null</code>;
+              (4) sem estado global nem chamadas de rede; (5) <code className="font-mono">params</code> lidos via <code className="font-mono">ctx.params</code>.
+            </p>
           </section>
         </div>
       </DialogContent>

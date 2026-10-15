@@ -48,6 +48,8 @@ export interface BacktestRun {
   capital: number;
   stakePerEntry: number;
   leverage: number;
+  /** Spread bid-ask usado (%), se disponível. */
+  spreadPct?: number;
   result: CryptoBacktestResult;
   /** Tempo (ms) das velas de entrada/saída — usado p/ mapear marcadores. */
   times: { entry: number; exit: number }[];
