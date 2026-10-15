@@ -102,6 +102,17 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Formata top-5: garante { picks: [...] } mesmo com texto livre. 1) output.picks 2) output.state objeto ou JSON-string 3) fallback cities+tese (conf 50).\nconst item = $input.first().json;\nconst out = item.output ?? item;\nlet picks = null;\nif (Array.isArray(out.picks)) picks = out.picks;\nconst st = out.state;\nif (!picks && st && typeof st === 'object' && Array.isArray(st.picks)) picks = st.picks;\nif (!picks && typeof st === 'string') {\n  const t = st.trim().replace(/^```json\\s*/i, '').replace(/\\s*```$/, '');\n  if (t.startsWith('{') || t.startsWith('[')) {\n    try { const p = JSON.parse(t); picks = Array.isArray(p) ? p : (p.picks ?? null); } catch (e) {}\n  }\n}\nif (!picks && Array.isArray(out.cities) && out.cities.length > 0) {\n  const thesis = typeof st === 'string' ? st.slice(0, 500) : 'Selecao do agente (sem detalhe estruturado).';\n  picks = out.cities.slice(0, 5).map((s) => ({ symbol: String(s).toUpperCase(), direction: 'UP', confidence: 50, thesis, catalysts: [], risks: ['Agente sem analise estruturada - rever com cautela'], invalidation: '' }));\n}\nif (!Array.isArray(picks)) picks = [];\npicks = picks.slice(0, 5).map((p) => ({ symbol: String(p.symbol || '').toUpperCase(), direction: p.direction === 'DOWN' ? 'DOWN' : p.direction === 'NEUTRAL' ? 'NEUTRAL' : 'UP', confidence: Number.isFinite(Number(p.confidence)) ? Math.min(100, Math.max(0, Number(p.confidence))) : 50, thesis: typeof p.thesis === 'string' ? p.thesis.slice(0, 500) : '', catalysts: Array.isArray(p.catalysts) ? p.catalysts.map(String).slice(0, 5) : [], risks: Array.isArray(p.risks) ? p.risks.map(String).slice(0, 5) : [], invalidation: typeof p.invalidation === 'string' ? p.invalidation.slice(0, 300) : '' })).filter((p) => p.symbol);\nreturn [{ picks }];"
+      },
+      "id": "code-formata",
+      "name": "Formata top-5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [940, 300]
+    },
+    {
+      "parameters": {
         "respondWith": "json",
         "responseBody": "={{ $json }}",
         "options": {}
@@ -110,11 +121,11 @@
       "name": "Responder top-5",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.4,
-      "position": [1060, 300]
+      "position": [1160, 300]
     },
     {
       "parameters": {
-        "content": "## Discovery AI Ranking — como ligar\n\n1. Importa este JSON no N8N (Workflows → Import from file).\n2. Preenche as credenciais: **modelo de chat** (OpenAI ou, para custo zero, troca o nó por OpenRouter/outro gratuito) e **Tavily** (pesquisa web). Sem Tavily, o agente usa só os indicadores — remove o nó de ferramenta nesse caso.\n3. Ativa o workflow e copia o **Production URL** do nó `Webhook triagem`.\n4. Cola o URL na página **Monitorização → universo Novas → Agente IA (N8N)**, ou define `N8N_WEBHOOK_URL` no `.env` do servidor.\n\n### Fluxo\n\n`Webhook triagem` → `Prepara triagem` (extrai `body.candidates` do embrulho do webhook) → `Agente discovery` (modelo + pesquisa web + parser) → `Responder top-5`.\n\n### Contrato de dados\n\n**Entrada (POST da plataforma, gerada por `buildDiscoveryPayload` em `src/lib/discovery.ts`):**\n`{ version: 1, generatedAt, source: \"quantterm-triage\", universe: \"spot-usdt\", candidates: [{ symbol, price, change24hPct, quoteVolumeUsdt, mom7dPct, volumeSurgeX, rsi14, atrPct, nearHigh7d, triageScore, reasons[], futuresEligible }] }` (10 itens)\n\n**Saída (este workflow responde com o output do agente — a plataforma extrai `picks` de qualquer nível, incluindo JSON em string):**\n`{ output: { picks: [{ symbol, direction: UP|DOWN|NEUTRAL, confidence 0-100, thesis, catalysts[], risks[], invalidation }] } }` (máx. 5)\n\nA plataforma mostra o botão **Trading** em cada pick apenas quando `futuresEligible` é verdadeiro; sem futuro listado, mostra só spot + valorização.",
+        "content": "## Discovery AI Ranking — como ligar\n\n1. Importa este JSON no N8N (Workflows → Import from file).\n2. Preenche as credenciais: **modelo de chat** (OpenAI ou, para custo zero, troca o nó por OpenRouter/outro gratuito) e **Tavily** (pesquisa web). Sem Tavily, o agente usa só os indicadores — remove o nó de ferramenta nesse caso.\n3. Ativa o workflow e copia o **Production URL** do nó `Webhook triagem`.\n4. Cola o URL na página **Monitorização → universo Novas → Agente IA (N8N)**, ou define `N8N_WEBHOOK_URL` no `.env` do servidor.\n\n### Fluxo\n\n`Webhook triagem` → `Prepara triagem` (extrai `body.candidates` do embrulho do webhook) → `Agente discovery` (modelo + pesquisa web + parser) → `Formata top-5` (normaliza QUALQUER output do agente para `{ picks }`, com fallback para a lista de símbolos) → `Responder top-5`.\n\n### Contrato de dados\n\n**Entrada (POST da plataforma, gerada por `buildDiscoveryPayload` em `src/lib/discovery.ts`):**\n`{ version: 1, generatedAt, source: \"quantterm-triage\", universe: \"spot-usdt\", candidates: [{ symbol, price, change24hPct, quoteVolumeUsdt, mom7dPct, volumeSurgeX, rsi14, atrPct, nearHigh7d, triageScore, reasons[], futuresEligible }] }` (10 itens)\n\n**Saída (este workflow responde com o output do agente — a plataforma extrai `picks` de qualquer nível, incluindo JSON em string):**\n`{ output: { picks: [{ symbol, direction: UP|DOWN|NEUTRAL, confidence 0-100, thesis, catalysts[], risks[], invalidation }] } }` (máx. 5)\n\nA plataforma mostra o botão **Trading** em cada pick apenas quando `futuresEligible` é verdadeiro; sem futuro listado, mostra só spot + valorização.",
         "height": 560,
         "width": 420,
         "color": 4
@@ -194,6 +205,17 @@
       ]
     },
     "Agente discovery": {
+      "main": [
+        [
+          {
+            "node": "Formata top-5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formata top-5": {
       "main": [
         [
           {
