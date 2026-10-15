@@ -4,7 +4,7 @@
 // Gráfico com ferramentas de desenho (linhas) e indicadores (EMA/BOLL/VOL/RSI/MACD).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, Link } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ArrowDown,
   ArrowUp,
+  BarChart3,
   Eraser,
   FlaskConical,
   Maximize2,
@@ -62,9 +63,9 @@ import {
   useFuturesPaper,
 } from "@/lib/cryptoFutures";
 import { CRYPTO_FEE_RATE as SPOT_PAPER_FEE } from "@/lib/cryptoPaper";
-import { useBacktestMode, type ChartMarker } from "@/lib/backtestMode";
+import { useBacktestMode, useBacktestResults, type ChartMarker } from "@/lib/backtestMode";
 import { getCryptoStrategy, listAllStrategies, useActiveStrategy } from "@/lib/cryptoStrategies";
-import { runCryptoBacktest, type CryptoBacktestResult } from "@/lib/cryptoBacktest";
+import { runCryptoBacktest } from "@/lib/cryptoBacktest";
 
 type EntryLine = { price: number; color: string; label: string; includeInScale?: boolean };
 type Tool = "cursor" | "trend" | "hline" | "vline" | "erase";
@@ -440,6 +441,20 @@ function FuturesChart({ klines, entryLines, markers }: { klines: BinanceKline[];
       hi = Math.max(hi, l.price);
       lo = Math.min(lo, l.price);
     });
+    // Inclui os preços de TP/SL/entrada/saída dos marcadores na escala vertical,
+    // para as caixas verdes/vermelhas ficarem visíveis (com a mesma guarda anti-outlier).
+    if (markers && markers.length > 0) {
+      for (const m of markers) {
+        const mid = (hi + lo) / 2;
+        const candleRange = Math.max(hi - lo, 1e-9);
+        for (const p of [m.takeProfitPrice, m.stopLossPrice, m.entryPrice, m.exitPrice]) {
+          if (!Number.isFinite(p)) continue;
+          if (Math.abs(p - mid) > candleRange * 5) continue;
+          hi = Math.max(hi, p);
+          lo = Math.min(lo, p);
+        }
+      }
+    }
     const range = hi - lo || 1;
     const pad = range * 0.06;
     const vLo = lo - pad;
@@ -596,14 +611,15 @@ function FuturesChart({ klines, entryLines, markers }: { klines: BinanceKline[];
       }
     });
 
-    // Marcadores de backtest (entradas e saídas) — desenhados sobre as velas.
+    // Marcadores de backtest: caixas TP/SL (entrada→saída), vela de entrada e setas.
     if (markers && markers.length > 0) {
       ctx.font = "bold 9px JetBrains Mono, monospace";
       const nView = view.length;
+      // Largura de uma vela para desenhar a caixa/realce.
+      const halfCw = Math.max(2, cw / 2);
       markers.forEach((m) => {
         const eIdx = m.entryIndex - start;
         const xIdx = m.exitIndex - start;
-        // Se a entrada está fora da vista, não salta o trade: só a seta desaparece.
         const eVisible = eIdx >= 0 && eIdx < nView;
         const xVisible = xIdx >= 0 && xIdx < nView;
         if (!eVisible && !xVisible) return;
@@ -613,9 +629,42 @@ function FuturesChart({ klines, entryLines, markers }: { klines: BinanceKline[];
         const xx = xOf(xc);
         const entryY = yOf(m.entryPrice);
         const exitY = yOf(m.exitPrice);
+        const tpY = yOf(m.takeProfitPrice);
+        const slY = yOf(m.stopLossPrice);
         const isLong = m.side === "LONG";
         const col = isLong ? "#22c55e" : "#ef4444";
-        // trilha entrada → saída
+        const xL = Math.min(ex, xx);
+        const xW = Math.max(2, Math.abs(xx - ex));
+
+        // Caixa verde (gain) e vermelha (loss): da entrada até à saída, no
+        // respetivo intervalo de preço. Transparentes para não tapar as velas.
+        ctx.fillStyle = "rgba(34,197,94,0.13)";
+        ctx.fillRect(xL, Math.min(entryY, tpY), xW, Math.abs(tpY - entryY));
+        ctx.fillStyle = "rgba(239,68,68,0.13)";
+        ctx.fillRect(xL, Math.min(entryY, slY), xW, Math.abs(slY - entryY));
+
+        // Bordas tracejadas no TP e no SL.
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = "rgba(34,197,94,0.6)";
+        ctx.beginPath();
+        ctx.moveTo(xL, tpY);
+        ctx.lineTo(xL + xW, tpY);
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(239,68,68,0.6)";
+        ctx.beginPath();
+        ctx.moveTo(xL, slY);
+        ctx.lineTo(xL + xW, slY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Vela de entrada realçada (só se a vela de entrada está na vista).
+        if (eVisible) {
+          ctx.fillStyle = "rgba(234,179,8,0.25)";
+          ctx.fillRect(ex - halfCw, mainTop, halfCw * 2, mainH);
+        }
+
+        // Trilha entrada → saída.
         ctx.strokeStyle = col;
         ctx.lineWidth = 1;
         ctx.setLineDash([2, 2]);
@@ -624,7 +673,8 @@ function FuturesChart({ klines, entryLines, markers }: { klines: BinanceKline[];
         ctx.lineTo(xx, exitY);
         ctx.stroke();
         ctx.setLineDash([]);
-        // seta de entrada (abaixo do pavio p/ LONG, acima p/ SHORT)
+
+        // Seta de entrada (abaixo do pavio p/ LONG, acima p/ SHORT).
         const candle = view[ec];
         if (eVisible && candle) {
           const arrowY = isLong ? yOf(candle.l) + 12 : yOf(candle.h) - 12;
@@ -642,7 +692,8 @@ function FuturesChart({ klines, entryLines, markers }: { klines: BinanceKline[];
           ctx.closePath();
           ctx.fill();
         }
-        // saída: losango colorido pelo PnL
+
+        // Saída: losango colorido pelo PnL (onde bateu TP/SL/saída).
         ctx.beginPath();
         ctx.fillStyle = m.pnl >= 0 ? "#22c55e" : "#ef4444";
         const s = 4;
@@ -919,13 +970,15 @@ export default function Trading() {
   const activeStrategyId = useActiveStrategy((s) => s.activeStrategyId);
   const activeDirection = useActiveStrategy((s) => s.direction);
   const [btStrategyId, setBtStrategyId] = useState<string>("");
-  const [btResult, setBtResult] = useState<CryptoBacktestResult | null>(null);
-  const [btTimes, setBtTimes] = useState<{ entry: number; exit: number }[]>([]);
   const [btRunning, setBtRunning] = useState(false);
   const [btError, setBtError] = useState("");
+  const lastRun = useBacktestResults((s) => s.last);
+  const setLastRun = useBacktestResults((s) => s.setLast);
 
   // Direção efetivamente aplicada (só quando a estratégia escolhida é a ligada).
   const btDir = btStrategyId && btStrategyId === activeStrategyId ? activeDirection : "all";
+  // O resultado só é válido para o símbolo/TF em que correu.
+  const btMatches = !!lastRun && lastRun.symbol === symbol && lastRun.interval === tf;
 
   useEffect(() => {
     if (backtestEnabled && !btStrategyId) {
@@ -933,10 +986,8 @@ export default function Trading() {
     }
   }, [backtestEnabled, activeStrategyId, btStrategyId]);
 
-  // Ao trocar de símbolo/TF, os resultados do backtest deixam de ser válidos.
+  // Ao trocar de símbolo/TF, limpa erros (o resultado fica guardado por símbolo/TF).
   useEffect(() => {
-    setBtResult(null);
-    setBtTimes([]);
     setBtError("");
   }, [symbol, tf]);
 
@@ -1283,7 +1334,6 @@ export default function Trading() {
     }
     setBtRunning(true);
     setBtError("");
-    setBtResult(null);
     try {
       // Usa SEMPRE as klines do próprio gráfico (índices alinhados com os marcadores).
       const closed = klines.slice(0, -1); // sem a vela em formação
@@ -1307,13 +1357,23 @@ export default function Trading() {
         leverage: 5,
         strategyParams: paramsv,
       });
-      setBtResult(res);
-      setBtTimes(
-        res.trades.map((t) => ({
+      setLastRun({
+        id: `${Date.now()}`,
+        ranAt: Date.now(),
+        symbol,
+        interval: tf,
+        strategyId: btStrategyId,
+        strategyName: strat.name,
+        direction: btDir,
+        capital: 10000,
+        stakePerEntry: 100,
+        leverage: 5,
+        result: res,
+        times: res.trades.map((t) => ({
           entry: closed[t.entryIndex]?.t ?? 0,
           exit: closed[t.exitIndex]?.t ?? 0,
-        }))
-      );
+        })),
+      });
       if (res.totalTrades === 0) toast.info("Backtest sem entradas — a estratégia não deu sinal neste período.");
       else toast.success(`Backtest: ${res.totalTrades} trades · PnL $${res.pnl.toFixed(2)} · WR ${res.winRate.toFixed(1)}%.`);
     } catch (e) {
@@ -1325,26 +1385,28 @@ export default function Trading() {
 
   // Marcadores mapeados por TEMPO de vela → sobrevivem a deslocamentos da janela.
   const backtestMarkers: ChartMarker[] = useMemo(() => {
-    if (!backtestEnabled || !btResult) return [];
+    if (!backtestEnabled || !lastRun || !btMatches) return [];
     const idxByT = new Map<number, number>();
     klines.forEach((k, i) => idxByT.set(k.t, i));
     const out: ChartMarker[] = [];
-    btResult.trades.forEach((t, i) => {
-      const entryIndex = idxByT.get(btTimes[i]?.entry ?? -1);
-      const exitIndex = idxByT.get(btTimes[i]?.exit ?? -1);
+    lastRun.result.trades.forEach((t, i) => {
+      const entryIndex = idxByT.get(lastRun.times[i]?.entry ?? -1);
+      const exitIndex = idxByT.get(lastRun.times[i]?.exit ?? -1);
       if (entryIndex === undefined || exitIndex === undefined) return;
       out.push({
         entryIndex,
         exitIndex,
         entryPrice: t.entryPrice,
         exitPrice: t.exitPrice,
+        takeProfitPrice: t.takeProfitPrice,
+        stopLossPrice: t.stopLossPrice,
         side: t.side,
         pnl: t.pnl,
         reason: t.reason,
       });
     });
     return out;
-  }, [backtestEnabled, btResult, btTimes, klines]);
+  }, [backtestEnabled, lastRun, btMatches, klines]);
 
   return (
     <AppShell>
@@ -1621,20 +1683,23 @@ export default function Trading() {
                 >
                   <Play className="h-3 w-3 mr-1" /> {btRunning ? "A correr…" : "Rodar backtest"}
                 </Button>
-                {btResult && (
+                {btMatches && lastRun && (
                   <span className="font-mono text-[11px] flex flex-wrap gap-2">
-                    <span>trades <b>{btResult.totalTrades}</b></span>
-                    <span>WR <b>{btResult.winRate.toFixed(1)}%</b></span>
-                    <span className={btResult.pnl >= 0 ? "text-bull" : "text-bear"}>PnL <b>{btResult.pnl >= 0 ? "+" : ""}${btResult.pnl.toFixed(2)}</b></span>
-                    <span>DD <b>{btResult.maxDrawdownPct.toFixed(1)}%</b></span>
+                    <span>trades <b>{lastRun.result.totalTrades}</b></span>
+                    <span>WR <b>{lastRun.result.winRate.toFixed(1)}%</b></span>
+                    <span className={lastRun.result.pnl >= 0 ? "text-bull" : "text-bear"}>PnL <b>{lastRun.result.pnl >= 0 ? "+" : ""}${lastRun.result.pnl.toFixed(2)}</b></span>
+                    <span>DD <b>{lastRun.result.maxDrawdownPct.toFixed(1)}%</b></span>
                   </span>
                 )}
                 <span className="ml-auto flex items-center gap-2">
-                  {btResult && btResult.totalTrades > 0 && (
+                  {btMatches && lastRun && lastRun.result.totalTrades > 0 && (
                     <span className="text-[10px] text-muted-foreground">
                       {backtestMarkers.length} marcadores no gráfico
                     </span>
                   )}
+                  <Button size="sm" variant="outline" className="h-7 text-[10px]" asChild>
+                    <Link to="/backtest-stats"><BarChart3 className="h-3 w-3 mr-1" /> Estatísticas</Link>
+                  </Button>
                   <Button size="sm" variant="ghost" className="h-7 text-[10px]" onClick={() => setBacktestEnabled(false)}>
                     <X className="h-3 w-3 mr-1" /> Sair
                   </Button>

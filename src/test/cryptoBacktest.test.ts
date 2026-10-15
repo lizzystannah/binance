@@ -91,4 +91,32 @@ describe("cryptoBacktest — honestidade", () => {
     // entryFee (1) + exitFee (1) = 2; a taxa de entrada não pode ser contada 2×.
     expect(r.finalEquity).toBeCloseTo(9998, 6);
   });
+
+  it("expõe TP/SL e taxas por trade (para o gráfico e estatísticas)", () => {
+    const killer: CryptoSpotStrategy = {
+      ...alwaysBuy,
+      id: "test_tpsl",
+      onSignal: () => ({ action: "BUY", stopGainPct: 1, stopLossPct: 1, reason: "test" }),
+    };
+    const klines = [
+      ...Array.from({ length: 6 }, (_, i) => candle(i, 100, 100.1, 99.9, 100)),
+      candle(7, 100, 101, 99, 100.5),
+      candle(8, 100.5, 101, 100, 100.5),
+      candle(9, 100.5, 101, 100, 100.5),
+      candle(10, 100.5, 101, 100, 100.5),
+    ];
+    const r = runCryptoBacktest(klines, killer, {
+      capital: 10000,
+      stakePerEntry: 1000,
+      feeRate: 0.001,
+      slippageRate: 0,
+    });
+    expect(r.totalTrades).toBeGreaterThan(0);
+    const t = r.trades[0];
+    // fill = 100; TP 1% acima, SL 1% abaixo.
+    expect(t.takeProfitPrice).toBeCloseTo(101, 6);
+    expect(t.stopLossPrice).toBeCloseTo(99, 6);
+    expect(t.feesPaid).toBeGreaterThan(0);
+    expect(t.fundingPaid).toBe(0);
+  });
 });

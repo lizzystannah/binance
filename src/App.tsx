@@ -16,6 +16,7 @@ const Market = lazy(() => import("./pages/Market.tsx"));
 const Trends = lazy(() => import("./pages/Trends.tsx"));
 const Orders = lazy(() => import("./pages/Orders.tsx"));
 const HistoryPage = lazy(() => import("./pages/History.tsx"));
+const BacktestStats = lazy(() => import("./pages/BacktestStats.tsx"));
 
 const queryClient = new QueryClient();
 
@@ -34,6 +35,7 @@ const App = () => (
           <Route path="/trading" element={<Index />} />
           <Route path="/orders" element={<Orders />} />
           <Route path="/history" element={<HistoryPage />} />
+          <Route path="/backtest-stats" element={<BacktestStats />} />
           <Route path="/robots" element={<Robots />} />
           <Route path="/strategies" element={<Strategies />} />
           <Route path="/market" element={<Market />} />

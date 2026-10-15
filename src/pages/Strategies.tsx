@@ -127,7 +127,7 @@ return null;                                // 4. sem sinal = null`}</pre>
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
               <li><strong>Criar robô:</strong> botão no card — nasce parado, copiando direção, timeframe e stops da estratégia. Ajusta capital, stake, leverage e liga na página Robôs.</li>
               <li><strong>Ligar (Switch):</strong> marca a estratégia como <em>ligada</em> — é com ela que a página de Backtest corre.</li>
-              <li><strong>Backtest:</strong> liga a estratégia e abre a página <strong>Trading</strong> em modo backtest. Aí clicas em “Rodar backtest” e o gráfico mostra as entradas/saídas nas velas (setas de entrada, losangos de saída). Corre sobre klines reais da Binance, sem lookahead.</li>
+              <li><strong>Backtest:</strong> liga a estratégia e abre a página <strong>Trading</strong> em modo backtest. Aí clicas em “Rodar backtest” e o gráfico mostra cada trade: seta de entrada, realce da vela de entrada, caixa verde (entrada→TP) e vermelha (entrada→SL) da entrada até à saída, e losango onde fechou. Os números completos ficam na página <strong>Estatísticas</strong>.</li>
             </ul>
           </section>
         </div>

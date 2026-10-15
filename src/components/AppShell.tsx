@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Activity, ArrowLeftRight, Bot, Settings, ArrowUp, ArrowDown, X, History, CandlestickChart, FlaskConical, TrendingUp } from "lucide-react";
+import { Activity, ArrowLeftRight, BarChart3, Bot, Settings, ArrowUp, ArrowDown, X, History, CandlestickChart, FlaskConical, TrendingUp } from "lucide-react";
 import { cn, getTradingDay } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { useState, useEffect } from "react";
@@ -9,6 +9,7 @@ const links = [
   { to: "/trading", label: "Trading (Futuros)", icon: Activity },
   { to: "/orders", label: "Ordens", icon: ArrowLeftRight },
   { to: "/history", label: "Histórico", icon: History },
+  { to: "/backtest-stats", label: "Estatísticas", icon: BarChart3 },
   { to: "/robots", label: "Robôs", icon: Bot },
   { to: "/strategies", label: "Estratégias", icon: FlaskConical },
   { to: "/market", label: "Mercado", icon: CandlestickChart },

@@ -75,7 +75,8 @@ export default function Settings() {
                 <div className="text-xs font-bold">Ativar modo backtest</div>
                 <div className="text-[10px] text-muted-foreground">
                   A página <strong>Trading</strong> passa a mostrar o gráfico em modo backtest: corre a
-                  estratégia ligada sobre velas fechadas e desenha as entradas/saídas nas velas.
+                  estratégia ligada sobre velas fechadas e desenha as entradas/saídas (caixas de TP/SL,
+                  vela de entrada). Os números ficam na página <strong>Estatísticas</strong>.
                 </div>
               </div>
               <Switch checked={backtestEnabled} onCheckedChange={setBacktestEnabled} />

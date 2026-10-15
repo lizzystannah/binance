@@ -31,11 +31,21 @@ export interface CryptoBacktestTrade {
   exitIndex: number;
   entryPrice: number;
   exitPrice: number;
+  /** Preço de take-profit definido na entrada. */
+  takeProfitPrice: number;
+  /** Preço de stop-loss definido na entrada. */
+  stopLossPrice: number;
   qty: number;
   side: "LONG" | "SHORT";
   leverage: number;
   pnl: number;
   pnlPct: number;
+  /** 0 = sem trailing definido. */
+  trailingPct?: number;
+  /** Taxas pagas (entrada + saída), já com leverage. */
+  feesPaid: number;
+  /** Custo de funding estimado para o trade. */
+  fundingPaid: number;
   reason: "TAKE_PROFIT" | "STOP_LOSS" | "STRATEGY_EXIT" | "END_OF_DATA" | "TRAILING";
 }
 
@@ -132,11 +142,16 @@ export function runCryptoBacktest(
       exitIndex,
       entryPrice: open.entry,
       exitPrice,
+      takeProfitPrice: open.tp,
+      stopLossPrice: open.sl,
       qty: open.qty,
       side: open.side,
       leverage,
       pnl,
       pnlPct: notional > 0 ? (pnl / opts.stakePerEntry) * 100 : 0,
+      trailingPct: open.trailingPct,
+      feesPaid: (open.entryFee + exitFee) * leverage,
+      fundingPaid: fundingCost,
       reason,
     });
     open = null;
