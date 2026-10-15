@@ -51,7 +51,7 @@ function DocsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: b
             <h3 className="font-bold text-white mb-1">1. Criar uma estratégia é só colar código</h3>
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
               <li>Botão <strong className="text-foreground">“Nova estratégia”</strong>: cola o código e clica em <em>Validar e criar</em>. O <code className="font-mono">id</code>, o <code className="font-mono">name</code> e a <code className="font-mono">description</code> são lidos do próprio código — não os escreves à mão.</li>
-              <li>Podes colar TypeScript (o servidor compila com esbuild) ou JavaScript puro. Usa <code className="font-mono">export default {"{ ... }"}</code> ou define uma <code className="font-mono">const</code>.</li>
+              <li>Podes colar <strong className="text-foreground">TypeScript</strong> (o servidor compila com esbuild) ou JavaScript puro. O objeto tem de ser <strong className="text-foreground">exportado</strong> — caso contrário a plataforma não o encontra.</li>
               <li><strong className="text-foreground">Stops, entrada e alavancagem NÃO ficam na estratégia</strong> — definem-se ao criar o robô (SL%, TP%, entrada $, alavancagem) e são editáveis depois.</li>
               <li><strong className="text-foreground">Formato do código:</strong> usa <code className="font-mono">export default {"{ ... }"}</code> (o mais simples) — a plataforma lê o <code className="font-mono">id</code> e o <code className="font-mono">name</code> daí. Também aceita <code className="font-mono">module.exports = {"{...}"}</code> ou um export nomeado (<code className="font-mono">export const minha = {"{...}"}</code>).</li>
             </ul>
@@ -173,7 +173,8 @@ return null;                                 // 4. sem sinal = null`}</pre>
               (2) <code className="font-mono">minCandles</code> coerente com os indicadores; (3) <code className="font-mono">onSignal(ctx)</code> que lê
               <code className="font-mono"> ctx.klines</code> (só fechadas) e devolve <code className="font-mono">LONG/SHORT/EXIT/FLAT</code> com
               <code className="font-mono"> stopGainPct</code>/<code className="font-mono">stopLossPct</code> &gt; 0, ou <code className="font-mono">null</code>;
-              (4) sem estado global nem chamadas de rede; (5) <code className="font-mono">params</code> lidos via <code className="font-mono">ctx.params</code>.
+              (4) sem estado global nem chamadas de rede; (5) <code className="font-mono">params</code> lidos via <code className="font-mono">ctx.params</code>;
+              (6) <strong className="text-foreground">exporta o objeto</strong> (<code className="font-mono">export default</code>).
             </p>
           </section>
         </div>

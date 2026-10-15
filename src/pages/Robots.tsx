@@ -306,7 +306,7 @@ export default function Robots() {
             <BookOpen className="h-4 w-4 text-primary" /> Como funcionam os robôs
           </h2>
           <ul className="text-[12px] text-muted-foreground list-disc pl-5 space-y-1">
-            <li><strong className="text-foreground">Nascem nas Estratégias:</strong> cada card tem “Criar robô Futuros” — o robô copia direção, timeframe e stops da estratégia e nasce parado.</li>
+            <li><strong className="text-foreground">Nascem nas Estratégias:</strong> cada card tem “Criar robô” — abre os parâmetros (par, timeframe, direção, valor de entrada, alavancagem, stop-gain, stop-loss) e o robô nasce parado, ligado ao <code className="font-mono">strategyId</code> da estratégia.</li>
             <li><strong className="text-foreground">Conta paper:</strong> o robô opera com o capital alocado virtual (stake por entrada, stops da conta, cooldown, máx. 5 posições). Nada sai para a corretora.</li>
             <li><strong className="text-foreground">Execução:</strong> o “Ligar” arma e valida a configuração. A execução automática das entradas pelo motor de Futuros é o próximo passo da plataforma — até lá, usa o Backtest para validar a estratégia.</li>
             <li><strong className="text-foreground">Direção:</strong> LONG abre compras, SHORT abre vendas, ambos aceita os dois sinais. O sinal da estratégia decide; a direção filtra.</li>
