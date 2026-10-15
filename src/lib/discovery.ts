@@ -237,14 +237,23 @@ export function buildDiscoveryPayload(candidates: TriageCandidate[]): DiscoveryP
 
 /** Valida a resposta do N8N (top-5). Aceita { picks: [...] } ou array direto. */
 export function parseDiscoveryResponse(json: unknown): { picks: DiscoveryPick[]; error?: string } {
-  const arr = Array.isArray(json)
-    ? json
-    : (json as { picks?: unknown })?.picks;
-  if (!Array.isArray(arr)) return { picks: [], error: "Resposta sem lista `picks`." };
+  const arr = findPicksArray(json, 0);
+  if (!arr) return { picks: [], error: `Resposta sem lista \`picks\` (recebido: ${describeJson(json)}).` };
   const picks: DiscoveryPick[] = [];
   for (const p of arr.slice(0, 8)) {
     const o = p as Record<string, unknown>;
     if (typeof o.symbol !== "string") continue;
+    // Evita confundir o eco das candidatas com picks: exige pelo menos um
+    // campo de análise do agente.
+    if (
+      !("direction" in o) &&
+      !("confidence" in o) &&
+      !("thesis" in o) &&
+      !("catalysts" in o) &&
+      !("risks" in o)
+    ) {
+      continue;
+    }
     picks.push({
       symbol: String(o.symbol).toUpperCase(),
       direction: o.direction === "DOWN" ? "DOWN" : o.direction === "NEUTRAL" ? "NEUTRAL" : "UP",
@@ -259,4 +268,61 @@ export function parseDiscoveryResponse(json: unknown): { picks: DiscoveryPick[];
   }
   if (picks.length === 0) return { picks: [], error: "Nenhum pick válido na resposta." };
   return { picks: picks.slice(0, 5) };
+}
+
+/**
+ * Procura a lista de picks em variações comuns de resposta do N8N
+ * ({ picks }, { output: { picks } }, { data: ... }, array direto,
+ * JSON em string, blocos ```json ... ```).
+ */
+function findPicksArray(node: unknown, depth: number): unknown[] | null {
+  if (depth > 4 || node == null) return null;
+  if (typeof node === "string") {
+    const t = node.trim().replace(/^```json\s*/i, "").replace(/\s*```$/, "");
+    if (!t.startsWith("{") && !t.startsWith("[")) return null;
+    try {
+      return findPicksArray(JSON.parse(t) as unknown, depth + 1);
+    } catch {
+      return null;
+    }
+  }
+  if (Array.isArray(node)) {
+    if (node.length > 0) {
+      const first = node[0] as Record<string, unknown>;
+      if (typeof first === "object" && first !== null && typeof first.symbol === "string") {
+        return node;
+      }
+      for (const el of node) {
+        const f = findPicksArray(el, depth + 1);
+        if (f) return f;
+      }
+    }
+    return null;
+  }
+  if (typeof node === "object") {
+    const o = node as Record<string, unknown>;
+    if (Array.isArray(o.picks)) return o.picks as unknown[];
+    for (const k of ["output", "data", "result", "response", "body", "json", "content"]) {
+      if (k in o) {
+        const f = findPicksArray(o[k], depth + 1);
+        if (f) return f;
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+/** Resume o que chegou (para a mensagem de erro orientar o acerto no N8N). */
+function describeJson(json: unknown): string {
+  try {
+    if (json == null) return String(json);
+    if (typeof json !== "object") return `${typeof json}: ${String(json).slice(0, 120)}`;
+    if (Array.isArray(json)) return `array[${json.length}]`;
+    const keys = Object.keys(json as Record<string, unknown>);
+    const head = keys.slice(0, 8).join(", ") || "(vazio)";
+    return `{ ${head} }`;
+  } catch {
+    return "?";
+  }
 }

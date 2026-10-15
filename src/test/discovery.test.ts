@@ -50,4 +50,28 @@ describe("discovery webhook contract", () => {
     expect(picks).toHaveLength(0);
     expect(error).toBeTruthy();
   });
+
+  it("aceita picks aninhados { output: { picks } }", () => {
+    const inner = [{
+      symbol: "B1USDT",
+      direction: "UP",
+      confidence: 70,
+      thesis: "t",
+      catalysts: [],
+      risks: [],
+      invalidation: "",
+    }];
+    const { picks, error } = parseDiscoveryResponse({ output: { picks: inner } });
+    expect(error).toBeUndefined();
+    expect(picks).toHaveLength(1);
+    expect(picks[0].symbol).toBe("B1USDT");
+  });
+
+  it("não confunde eco das candidatas com picks", () => {
+    const { picks, error } = parseDiscoveryResponse({
+      candidates: [{ symbol: "XYZUSDT", price: 1.2, triageScore: 80 }],
+    });
+    expect(picks).toHaveLength(0);
+    expect(error).toBeTruthy();
+  });
 });
