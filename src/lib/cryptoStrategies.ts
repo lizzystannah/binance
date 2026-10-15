@@ -7,6 +7,8 @@
 //   Futuros: LONG / SHORT / EXIT / FLAT — com leverage + funding awareness.
 
 import { atr, bollinger, ema, macd, rsi } from "@/lib/indicators";
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import type { RobotMode } from "./cryptoRobots";
 
 export type { RobotMode };
@@ -82,6 +84,8 @@ export interface CryptoStrategy {
   id: string;
   name: string;
   description: string;
+  /** "auto" = opera sozinha; "semi-auto" = precisa de confirmação (discrecionária). */
+  category?: "auto" | "semi-auto";
   /** Nº mínimo de velas fechadas exigido. */
   minCandles: number;
   defaults: { stopGainPct: number; stopLossPct: number; trailingPct?: number };
@@ -148,6 +152,7 @@ const trendPullback: CryptoStrategy = {
   defaults: { stopGainPct: 3, stopLossPct: 1.5 },
   timeframes: ["15m", "1h", "4h"],
   modes: ["spot", "futures"],
+  category: "auto",
   indicators: ["EMA20", "EMA50", "RSI14", "ATR14"],
   params: [
     { key: "rsiBuyMax", label: "RSI máx. compra", type: "number", default: 45, min: 20, max: 60, step: 1, hint: "Pullback: RSI abaixo disto" },
@@ -197,6 +202,7 @@ const bollingerBreakout: CryptoStrategy = {
   defaults: { stopGainPct: 4, stopLossPct: 2, trailingPct: 1.2 },
   timeframes: ["5m", "15m", "1h"],
   modes: ["spot", "futures"],
+  category: "auto",
   indicators: ["Bollinger(20,2)", "Volume 20", "ATR14"],
   params: [
     { key: "volumeMult", label: "Volume mín. ×", type: "number", default: 1.5, min: 1, max: 4, step: 0.1 },
@@ -251,6 +257,7 @@ const rsiMeanReversion: CryptoStrategy = {
   defaults: { stopGainPct: 2.5, stopLossPct: 1.2 },
   timeframes: ["5m", "15m", "1h"],
   modes: ["spot", "futures"],
+  category: "auto",
   indicators: ["RSI14", "EMA200", "ATR14"],
   params: [
     { key: "rsiOversold", label: "RSI oversold", type: "number", default: 30, min: 15, max: 40, step: 1 },
@@ -296,6 +303,7 @@ const macdEmaTrend: CryptoStrategy = {
   defaults: { stopGainPct: 3.5, stopLossPct: 1.5, trailingPct: 1.5 },
   timeframes: ["15m", "1h", "4h"],
   modes: ["spot", "futures"],
+  category: "auto",
   indicators: ["MACD(12,26,9)", "EMA50", "Volume 20", "ATR14"],
   params: [
     { key: "requireVolume", label: "Exigir volume alto", type: "select", default: "sim", options: ["sim", "não"] },
@@ -349,6 +357,7 @@ const emaCross: CryptoStrategy = {
   defaults: { stopGainPct: 2, stopLossPct: 1 },
   timeframes: ["1m", "5m", "15m"],
   modes: ["spot", "futures"],
+  category: "auto",
   indicators: ["EMA9", "EMA21", "ATR14"],
   params: [
     { key: "stopAtrMult", label: "Stop ATR ×", type: "number", default: 1.0, min: 0.5, max: 3, step: 0.1 },
@@ -399,6 +408,7 @@ const orderblockSmc: CryptoStrategy = {
   defaults: { stopGainPct: 3, stopLossPct: 1.2 },
   timeframes: ["15m", "1h", "4h"],
   modes: ["spot", "futures"],
+  category: "semi-auto",
   indicators: ["Swing H/L 20", "FVG proxy", "ATR14"],
   params: [
     { key: "lookback", label: "Lookback swing", type: "number", default: 20, min: 10, max: 50, step: 1 },
@@ -494,3 +504,26 @@ export function validateCryptoSignal(
     return { ok: false, reason: "Trailing inválido." };
   return { ok: true };
 }
+
+// ─── Estratégia ligada (para o Backtest) ────────────────────────────────────
+// A página Estratégias liga UMA estratégia de cada vez (Switch no card).
+// A página de Backtest lê este id e corre o backtest com a estratégia ligada.
+export type StrategyDirection = "all" | "long" | "short";
+
+interface ActiveStrategyStore {
+  activeStrategyId: string | null;
+  direction: StrategyDirection;
+  setActive: (id: string | null, direction?: StrategyDirection) => void;
+}
+
+export const useActiveStrategy = create<ActiveStrategyStore>()(
+  persist(
+    (set) => ({
+      activeStrategyId: null,
+      direction: "all",
+      setActive: (id, direction = "all") =>
+        set({ activeStrategyId: id, direction }),
+    }),
+    { name: "quantterm:active-strategy" }
+  )
+);

@@ -1,4 +1,4 @@
-import { NavLink, useSearchParams } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 import { Activity, ArrowLeftRight, Bot, Settings, ArrowUp, ArrowDown, X, History, CandlestickChart, FlaskConical, TrendingUp } from "lucide-react";
 import { cn, getTradingDay } from "@/lib/utils";
 import { useStore } from "@/lib/store";
@@ -9,7 +9,7 @@ const links = [
   { to: "/trading", label: "Trading (Futuros)", icon: Activity },
   { to: "/orders", label: "Ordens", icon: ArrowLeftRight },
   { to: "/history", label: "Histórico", icon: History },
-  { to: "/robots", label: "Robôs", icon: Bot, matchTabs: true },
+  { to: "/robots", label: "Robôs", icon: Bot },
   { to: "/strategies", label: "Estratégias", icon: FlaskConical },
   { to: "/market", label: "Mercado", icon: CandlestickChart },
   { to: "/trends", label: "Monitorização", icon: TrendingUp },
@@ -66,29 +66,6 @@ function SidebarOperations() {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function RobotsSubNav() {
-  const [params, setParams] = useSearchParams();
-  const tab = params.get("tab") === "spot" ? "spot" : "futures";
-  return (
-    <div className="px-3 pb-1 flex gap-1">
-      {(["futures", "spot"] as const).map((t) => (
-        <button
-          key={t}
-          onClick={() => setParams(t === "futures" ? {} : { tab: t })}
-          className={cn(
-            "flex-1 text-[9px] font-bold uppercase rounded-sm border py-1 transition-colors",
-            tab === t
-              ? "bg-secondary border-border text-primary"
-              : "text-muted-foreground border-transparent hover:bg-secondary/60"
-          )}
-        >
-          {t === "futures" ? "Futuros" : "Spot"}
-        </button>
-      ))}
     </div>
   );
 }
@@ -151,7 +128,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </header>
       <div className="flex flex-1 min-h-0">
         <aside className="w-44 shrink-0 border-r border-border bg-sidebar p-2 flex flex-col gap-1 min-h-0">
-          {links.map(({ to, label, icon: Icon, matchTabs }: any) => (
+          {links.map(({ to, label, icon: Icon }: any) => (
             <div key={to}>
               <NavLink
                 to={to}
@@ -168,7 +145,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Icon className="h-3.5 w-3.5" />
                 <span className="uppercase tracking-wider">{label}</span>
               </NavLink>
-              {matchTabs && <RobotsSubNav />}
             </div>
           ))}
           <SidebarOperations />
