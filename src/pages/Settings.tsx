@@ -79,7 +79,13 @@ export default function Settings() {
                   vela de entrada). Os números ficam na página <strong>Estatísticas</strong>.
                 </div>
               </div>
-              <Switch checked={backtestEnabled} onCheckedChange={setBacktestEnabled} />
+              <Switch
+                checked={backtestEnabled}
+                onCheckedChange={(v) => {
+                  setBacktestEnabled(v);
+                  setTradingMode(v ? "backtest" : "demo");
+                }}
+              />
             </div>
             <div className="text-[11px] text-muted-foreground">
               Estratégia ligada:{" "}
@@ -101,7 +107,10 @@ export default function Settings() {
               {(["demo", "real", "backtest"] as const).map((m) => (
                 <button
                   key={m}
-                  onClick={() => setTradingMode(m)}
+                  onClick={() => {
+                    setTradingMode(m);
+                    setBacktestEnabled(m === "backtest");
+                  }}
                   className={`py-2.5 text-xs border rounded-sm uppercase font-bold ${
                     tradingMode === m
                       ? "border-primary text-primary bg-secondary/40"

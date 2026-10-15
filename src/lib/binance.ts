@@ -606,6 +606,26 @@ export const MAX_LEVERAGE = 125;
 export const MIN_LEVERAGE = 1;
 
 /** Klines de futuros (mark/close). Tenta fapi → cai para spot se 451. */
+/** Máximo de velas por pedido na Binance (fapi). */
+const FUTURES_KLINES_PAGE = 1500;
+
+function mapKlines(raw: Array<[number, string, string, string, string, string, number, string]>): BinanceKline[] {
+  return raw.map((k) => ({
+    t: k[0],
+    o: parseFloat(k[1]),
+    h: parseFloat(k[2]),
+    l: parseFloat(k[3]),
+    c: parseFloat(k[4]),
+    v: parseFloat(k[5]),
+    closeTime: k[6],
+    quoteVolume: parseFloat(k[7]),
+  }));
+}
+
+/**
+ * Klines de futuros. A Binance limita a 1500 por pedido, por isso pagina
+ * recursivamente (para trás, com endTime) até obter `limit` velas (ex.: 5000).
+ */
 export async function fetchFuturesKlines(
   symbol: string,
   interval: string = "1m",
@@ -615,23 +635,27 @@ export async function fetchFuturesKlines(
   if (!FUTURES_INTERVALS.includes(interval as FuturesInterval)) {
     throw new Error(`Intervalo de futuros inválido: ${interval}.`);
   }
-  const clamped = Math.min(Math.max(limit, 1), 1000);
-  const path = `/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&limit=${clamped}`;
+  const want = Math.min(Math.max(limit, 1), 20_000);
   try {
-    const raw = await futuresGet<Array<[number, string, string, string, string, string, number, string]>>(path);
-    return raw.map((k) => ({
-      t: k[0],
-      o: parseFloat(k[1]),
-      h: parseFloat(k[2]),
-      l: parseFloat(k[3]),
-      c: parseFloat(k[4]),
-      v: parseFloat(k[5]),
-      closeTime: k[6],
-      quoteVolume: parseFloat(k[7]),
-    }));
+    const pages: BinanceKline[][] = [];
+    let endTime: number | undefined;
+    let got = 0;
+    while (got < want) {
+      const pageLimit = Math.min(FUTURES_KLINES_PAGE, want - got);
+      const qs = `/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&limit=${pageLimit}${endTime ? `&endTime=${endTime}` : ""}`;
+      const raw = await futuresGet<Array<[number, string, string, string, string, string, number, string]>>(qs);
+      if (raw.length === 0) break;
+      const chunk = mapKlines(raw);
+      pages.unshift(chunk); // chunk mais antigo vai para a frente
+      got += chunk.length;
+      endTime = chunk[0].t - 1; // continua para trás
+      if (raw.length < pageLimit) break; // chegámos ao início do histórico
+    }
+    const all = pages.flat();
+    return all.slice(-want);
   } catch {
     // Fallback honesto: spot klines têm o mesmo formato OHLCV.
-    return fetchKlines(sym, interval, clamped);
+    return fetchKlines(sym, interval, Math.min(want, 1000));
   }
 }
 

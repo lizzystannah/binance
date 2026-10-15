@@ -63,6 +63,7 @@ import {
   useFuturesPaper,
 } from "@/lib/cryptoFutures";
 import { CRYPTO_FEE_RATE as SPOT_PAPER_FEE } from "@/lib/cryptoPaper";
+import { useStore } from "@/lib/store";
 import { useBacktestMode, useBacktestResults, type ChartMarker } from "@/lib/backtestMode";
 import { applyDirectionAndInvert, getCryptoStrategy, listAllStrategies, useActiveStrategy, useStrategyInvert } from "@/lib/cryptoStrategies";
 import { runCryptoBacktest } from "@/lib/cryptoBacktest";
@@ -141,7 +142,7 @@ function ToolButton({
 }
 
 // ─── Gráfico: zoom/pan + ferramentas de desenho + indicadores ───
-function FuturesChart({ klines, entryLines, markers }: { klines: BinanceKline[]; entryLines: EntryLine[]; markers?: ChartMarker[] }) {
+function FuturesChart({ klines, entryLines, markers, fitKey }: { klines: BinanceKline[]; entryLines: EntryLine[]; markers?: ChartMarker[]; fitKey?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 420 });
@@ -214,6 +215,27 @@ function FuturesChart({ klines, entryLines, markers }: { klines: BinanceKline[];
   useEffect(() => {
     setEndOffset((o) => Math.min(Math.max(0, o), Math.max(0, total - viewCount)));
   }, [total, viewCount]);
+
+  // Ao correr um novo backtest (fitKey muda), ajusta a vista para mostrar os
+  // trades. Só dispara num novo run — não em cada atualização de velas.
+  useEffect(() => {
+    if (!fitKey || !markers || markers.length === 0) return;
+    let minI = Infinity;
+    let maxI = -Infinity;
+    for (const m of markers) {
+      minI = Math.min(minI, m.entryIndex);
+      maxI = Math.max(maxI, m.exitIndex);
+    }
+    const pad = 15;
+    const start = Math.max(0, minI - pad);
+    const end = Math.min(total, maxI + pad + 1);
+    const span = Math.max(20, end - start);
+    const cap = 1200;
+    setViewCount(Math.min(cap, span));
+    setEndOffset(Math.max(0, total - end));
+    // Só refaz o enquadramento quando um NOVO backtest corre (fitKey muda).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitKey]);
 
   // Zoom com a roda
   useEffect(() => {
@@ -967,12 +989,19 @@ export default function Trading() {
   // ── Modo backtest ──
   const backtestEnabled = useBacktestMode((s) => s.enabled);
   const setBacktestEnabled = useBacktestMode((s) => s.setEnabled);
+  const setTradingMode = useStore((s) => s.setTradingMode);
   const activeStrategyId = useActiveStrategy((s) => s.activeStrategyId);
   const activeDirection = useActiveStrategy((s) => s.direction);
   const invertMap = useStrategyInvert((s) => s.invert);
   const [btStrategyId, setBtStrategyId] = useState<string>("");
   const [btRunning, setBtRunning] = useState(false);
   const [btError, setBtError] = useState("");
+  const [btAmount, setBtAmount] = useState("100");
+  const [btLeverage, setBtLeverage] = useState("5");
+  const [btTp, setBtTp] = useState("3");
+  const [btSl, setBtSl] = useState("1.5");
+  const [btCapital, setBtCapital] = useState("10000");
+  const [btUseStratStops, setBtUseStratStops] = useState(false);
   const lastRun = useBacktestResults((s) => s.last);
   const setLastRun = useBacktestResults((s) => s.setLast);
 
@@ -1034,7 +1063,7 @@ export default function Trading() {
   const loadKlines = useCallback(async (sym: string, timeframe: string) => {
     setKlinesLoading(true);
     try {
-      const data = await fetchFuturesKlines(sym, timeframe, 500);
+      const data = await fetchFuturesKlines(sym, timeframe, 5000);
       klinesCache.current[sym] = data;
       setKlines(data);
     } catch (e) {
@@ -1070,7 +1099,7 @@ export default function Trading() {
           copy.push(candle);
           return copy;
         }
-        if (candle.t > last.t) return [...prev.slice(-999), candle];
+        if (candle.t > last.t) return [...prev.slice(-5999), candle];
         return prev;
       });
       setLiveMarks((m) => (m[symbol] === candle.c ? m : { ...m, [symbol]: candle.c }));
@@ -1337,20 +1366,36 @@ export default function Trading() {
     setBtRunning(true);
     setBtError("");
     try {
+      const capital = parseFloat(btCapital);
+      const stake = parseFloat(btAmount);
+      const lev = Math.min(125, Math.max(1, parseInt(btLeverage) || 5));
+      const tpOv = parseFloat(btTp);
+      const slOv = parseFloat(btSl);
+      if (!Number.isFinite(capital) || capital <= 0) throw new Error("Capital inicial tem de ser > 0.");
+      if (!Number.isFinite(stake) || stake <= 0) throw new Error("Valor de entrada tem de ser > 0.");
+      if (stake > capital) throw new Error("Valor de entrada não pode exceder o capital.");
+      if (!btUseStratStops && (!(tpOv > 0) || !(slOv > 0))) throw new Error("Stop-gain e stop-loss têm de ser > 0.");
       // Usa SEMPRE as klines do próprio gráfico (índices alinhados com os marcadores).
       const closed = klines.slice(0, -1); // sem a vela em formação
       if (closed.length < strat.minCandles + 2) throw new Error("Aguarda carregar mais velas para esta estratégia.");
       const paramsv = Object.fromEntries((strat.params ?? []).map((p) => [p.key, p.default]));
       const wrapped = {
         ...strat,
-        onSignal: (ctx: Parameters<typeof strat.onSignal>[0]) =>
-          applyDirectionAndInvert(strat.onSignal({ ...ctx, params: paramsv }), btDir, btInvert),
+        onSignal: (ctx: Parameters<typeof strat.onSignal>[0]) => {
+          const sig = applyDirectionAndInvert(strat.onSignal({ ...ctx, params: paramsv }), btDir, btInvert);
+          if (!sig) return null;
+          // Override dos stops pelo painel (a não ser que use os da estratégia).
+          if (!btUseStratStops) {
+            return { ...sig, stopGainPct: tpOv, stopLossPct: slOv, reason: `${sig.reason} · TP${tpOv}%/SL${slOv}%` };
+          }
+          return sig;
+        },
       };
       const res = runCryptoBacktest(closed, wrapped, {
-        capital: 10000,
-        stakePerEntry: 100,
+        capital,
+        stakePerEntry: stake,
         mode: "futures",
-        leverage: 5,
+        leverage: lev,
         strategyParams: paramsv,
       });
       setLastRun({
@@ -1361,9 +1406,9 @@ export default function Trading() {
         strategyId: btStrategyId,
         strategyName: strat.name,
         direction: btDir,
-        capital: 10000,
-        stakePerEntry: 100,
-        leverage: 5,
+        capital,
+        stakePerEntry: stake,
+        leverage: lev,
         result: res,
         times: res.trades.map((t) => ({
           entry: closed[t.entryIndex]?.t ?? 0,
@@ -1651,68 +1696,6 @@ export default function Trading() {
             </div>
           </div>
 
-          {/* Barra de modo backtest */}
-          {backtestEnabled && (
-            <Card className="shrink-0 bg-warning/10 border-warning/40">
-              <CardContent className="p-2 flex flex-wrap items-center gap-2 text-xs">
-                <span className="font-bold text-warning flex items-center gap-1">
-                  <FlaskConical className="h-3.5 w-3.5" /> MODO BACKTEST
-                </span>
-                <span className="text-muted-foreground hidden sm:inline">Estratégia:</span>
-                <select
-                  value={btStrategyId}
-                  onChange={(e) => setBtStrategyId(e.target.value)}
-                  className="h-8 text-xs bg-secondary/50 border border-border rounded px-2 font-mono max-w-[240px]"
-                >
-                  {listAllStrategies().map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-                <span className="text-[10px] text-muted-foreground font-mono">
-                  {symbol} · {tf}{btDir !== "all" ? ` · ${btDir}` : ""}
-                </span>
-                {btInvert && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded border border-warning/50 text-warning font-bold" title="Sinais desta estratégia estão invertidos (LONG↔SHORT)">
-                    INVERTIDO
-                  </span>
-                )}
-                <Button
-                  size="sm"
-                  className="h-8 text-[11px] font-bold"
-                  onClick={runBacktest}
-                  disabled={btRunning}
-                >
-                  <Play className="h-3 w-3 mr-1" /> {btRunning ? "A correr…" : "Rodar backtest"}
-                </Button>
-                {btMatches && lastRun && (
-                  <span className="font-mono text-[11px] flex flex-wrap gap-2">
-                    <span>trades <b>{lastRun.result.totalTrades}</b></span>
-                    <span>WR <b>{lastRun.result.winRate.toFixed(1)}%</b></span>
-                    <span className={lastRun.result.pnl >= 0 ? "text-bull" : "text-bear"}>PnL <b>{lastRun.result.pnl >= 0 ? "+" : ""}${lastRun.result.pnl.toFixed(2)}</b></span>
-                    <span>DD <b>{lastRun.result.maxDrawdownPct.toFixed(1)}%</b></span>
-                  </span>
-                )}
-                <span className="ml-auto flex items-center gap-2">
-                  {btMatches && lastRun && lastRun.result.totalTrades > 0 && (
-                    <span className="text-[10px] text-muted-foreground">
-                      {backtestMarkers.length} marcadores no gráfico
-                    </span>
-                  )}
-                  <Button size="sm" variant="outline" className="h-7 text-[10px]" asChild>
-                    <Link to="/backtest-stats"><BarChart3 className="h-3 w-3 mr-1" /> Estatísticas</Link>
-                  </Button>
-                  <Button size="sm" variant="ghost" className="h-7 text-[10px]" onClick={() => setBacktestEnabled(false)}>
-                    <X className="h-3 w-3 mr-1" /> Sair
-                  </Button>
-                </span>
-              </CardContent>
-            </Card>
-          )}
-
-          {btError && (
-            <div className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded p-2 shrink-0">{btError}</div>
-          )}
-
           <Card className="flex-1 min-h-0 flex flex-col bg-secondary/20 border-border/50 overflow-hidden">
             <CardHeader className="py-2 px-3 border-b border-border/50 flex flex-row items-center gap-2 shrink-0">
               <CardTitle className="text-xs font-bold">{symbol} · Perp USDT-M</CardTitle>
@@ -1736,7 +1719,12 @@ export default function Trading() {
                   A carregar velas…
                 </div>
               ) : (
-                <FuturesChart klines={klines} entryLines={chartLines} markers={backtestMarkers} />
+                <FuturesChart
+                  klines={klines}
+                  entryLines={chartLines}
+                  markers={backtestMarkers}
+                  fitKey={backtestEnabled && btMatches && lastRun ? lastRun.id : undefined}
+                />
               )}
             </CardContent>
           </Card>
@@ -1778,6 +1766,92 @@ export default function Trading() {
             </CardContent>
           </Card>
 
+          {backtestEnabled ? (
+            <Card className="bg-warning/10 border-warning/40">
+              <CardHeader className="py-2 px-3 border-b border-warning/30">
+                <CardTitle className="text-xs font-bold flex items-center gap-2 text-warning">
+                  <FlaskConical className="h-3.5 w-3.5" /> MODO BACKTEST
+                </CardTitle>
+                <CardDescription className="text-[10px]">
+                  Estas configurações aplicam-se ao backtest (klines reais, conta paper).
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-3 flex flex-col gap-3 text-xs">
+                <div>
+                  <label className="text-[9px] text-muted-foreground uppercase font-bold">Estratégia</label>
+                  <select
+                    value={btStrategyId}
+                    onChange={(e) => setBtStrategyId(e.target.value)}
+                    className="h-8 w-full mt-1 text-xs bg-secondary/50 border border-border rounded px-2 font-mono"
+                  >
+                    {listAllStrategies().map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-muted-foreground font-mono mt-1">
+                    {symbol} · {tf}{btDir !== "all" ? ` · ${btDir}` : ""}
+                    {btInvert && <span className="ml-1 text-warning font-bold">· INVERTIDO</span>}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[9px] text-muted-foreground uppercase font-bold">Valor de entrada $</label>
+                    <Input value={btAmount} onChange={(e) => setBtAmount(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="decimal" />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-muted-foreground uppercase font-bold">Alavancagem x</label>
+                    <Input value={btLeverage} onChange={(e) => setBtLeverage(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="numeric" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[9px] text-muted-foreground uppercase font-bold">Stop-gain %</label>
+                    <Input value={btTp} disabled={btUseStratStops} onChange={(e) => setBtTp(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="decimal" />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-muted-foreground uppercase font-bold">Stop-loss %</label>
+                    <Input value={btSl} disabled={btUseStratStops} onChange={(e) => setBtSl(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="decimal" />
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
+                  <Checkbox checked={btUseStratStops} onCheckedChange={(v) => setBtUseStratStops(!!v)} className="h-3.5 w-3.5" />
+                  Usar os stops definidos pela própria estratégia
+                </label>
+
+                <div>
+                  <label className="text-[9px] text-muted-foreground uppercase font-bold">Capital inicial $</label>
+                  <Input value={btCapital} onChange={(e) => setBtCapital(e.target.value)} className="h-8 text-xs font-mono mt-1" inputMode="decimal" />
+                </div>
+
+                {btError && <p className="text-[11px] text-rose-400">{btError}</p>}
+
+                <Button onClick={runBacktest} disabled={btRunning} className="h-10 text-xs font-bold w-full">
+                  <Play className="h-3.5 w-3.5 mr-1" /> {btRunning ? "A correr…" : "Rodar backtesting"}
+                </Button>
+
+                {btMatches && lastRun && (
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <div><div className="text-[9px] uppercase text-muted-foreground">Trades</div><div className="font-mono font-bold">{lastRun.result.totalTrades}</div></div>
+                    <div><div className="text-[9px] uppercase text-muted-foreground">Win rate</div><div className="font-mono font-bold">{lastRun.result.winRate.toFixed(1)}%</div></div>
+                    <div><div className="text-[9px] uppercase text-muted-foreground">PnL</div><div className={`font-mono font-bold ${lastRun.result.pnl >= 0 ? "text-bull" : "text-bear"}`}>{lastRun.result.pnl >= 0 ? "+" : ""}${lastRun.result.pnl.toFixed(2)}</div></div>
+                    <div><div className="text-[9px] uppercase text-muted-foreground">DD máx</div><div className="font-mono font-bold">{lastRun.result.maxDrawdownPct.toFixed(1)}%</div></div>
+                  </div>
+                )}
+
+                <div className="flex gap-2 pt-1">
+                  <Button size="sm" variant="outline" className="flex-1 h-8 text-[11px]" asChild>
+                    <Link to="/backtest-stats"><BarChart3 className="h-3.5 w-3.5 mr-1" /> Estatísticas</Link>
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-8 text-[11px] text-muted-foreground" onClick={() => { setBacktestEnabled(false); setTradingMode("demo"); }}>
+                    <X className="h-3.5 w-3.5 mr-1" /> Sair
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
           <Card className="bg-secondary/20 border-border/50">
             <CardHeader className="py-2 px-3 border-b border-border/50">
               <CardTitle className="text-xs font-bold">Ordem · {symbol} Perp</CardTitle>
@@ -1923,6 +1997,7 @@ export default function Trading() {
               </div>
             </CardContent>
           </Card>
+          )}
         </div>
       </div>
     </AppShell>

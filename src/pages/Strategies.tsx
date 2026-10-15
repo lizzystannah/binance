@@ -26,6 +26,7 @@ import {
 } from "@/lib/cryptoStrategies";
 import { useCryptoRobots, type FuturesDirection } from "@/lib/cryptoRobots";
 import { useBacktestMode } from "@/lib/backtestMode";
+import { useStore } from "@/lib/store";
 
 const DIR_LABEL: Record<StrategyDirection, string> = {
   all: "Todas",
@@ -129,7 +130,7 @@ return null;                                // 4. sem sinal = null`}</pre>
               <li><strong>Criar robô:</strong> botão no card — nasce parado, copiando direção, timeframe e stops da estratégia. Ajusta capital, stake, leverage e liga na página Robôs.</li>
               <li><strong>Ligar (Switch):</strong> marca a estratégia como <em>ligada</em> — é com ela que a página de Backtest corre.</li>
               <li><strong>Inverter:</strong> troca todos os sinais da estratégia (LONG↔SHORT). Aplica-se ao backtest e é copiado para os robôs criados a partir dela. O card fica com um anel de aviso enquanto estiver invertido.</li>
-              <li><strong>Backtest:</strong> liga a estratégia e abre a página <strong>Trading</strong> em modo backtest. Aí clicas em “Rodar backtest” e o gráfico mostra cada trade: seta de entrada, realce da vela de entrada, caixa verde (entrada→TP) e vermelha (entrada→SL) da entrada até à saída, e losango onde fechou. Os números completos ficam na página <strong>Estatísticas</strong>.</li>
+              <li><strong>Backtest:</strong> liga a estratégia e abre a página <strong>Trading</strong> em modo backtest. Na barra lateral direita defines valor de entrada, alavancagem, stop-gain, stop-loss e capital, e clicas em “Rodar backtesting”. O gráfico mostra cada trade: seta de entrada, realce da vela de entrada, caixa verde (entrada→TP) e vermelha (entrada→SL) da entrada até à saída, e losango onde fechou. Os números completos ficam na página <strong>Estatísticas</strong>.</li>
             </ul>
           </section>
         </div>
@@ -354,6 +355,7 @@ export default function Strategies() {
   const handleBacktest = (strategyId: string) => {
     setActiveStrategy(strategyId, dirOf(strategyId));
     useBacktestMode.getState().setEnabled(true);
+    useStore.getState().setTradingMode("backtest");
     toast.info("Modo backtest ligado. A correr em Trading…");
     navigate("/trading");
   };
