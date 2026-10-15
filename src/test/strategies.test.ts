@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyDirectionAndInvert,
   buildCustomStrategy,
   getCustomStrategy,
+  invertCryptoAction,
   listAllStrategies,
   useCustomStrategies,
   type CryptoCandle,
+  type CryptoSignal,
 } from "@/lib/cryptoStrategies";
 
 function candles(prices: number[]): CryptoCandle[] {
@@ -107,5 +110,29 @@ describe("custom strategies", () => {
     const { create } = useCustomStrategies.getState();
     expect(create({ name: "", template: "rsi_reversao", timeframes: ["15m"], params: {}, stopGainPct: 3, stopLossPct: 1 }).ok).toBe(false);
     expect(create({ name: "X", template: "rsi_reversao", timeframes: [], params: {}, stopGainPct: 3, stopLossPct: 1 }).ok).toBe(false);
+  });
+
+  it("invertCryptoAction troca LONG↔SHORT e BUY↔SELL", () => {
+    expect(invertCryptoAction("LONG")).toBe("SHORT");
+    expect(invertCryptoAction("SHORT")).toBe("LONG");
+    expect(invertCryptoAction("BUY")).toBe("SHORT");
+    expect(invertCryptoAction("SELL")).toBe("LONG");
+    expect(invertCryptoAction("EXIT")).toBe("EXIT");
+    expect(invertCryptoAction("FLAT")).toBe("FLAT");
+  });
+
+  it("applyDirectionAndInvert: direção filtra o sinal natural, invert é o passo final", () => {
+    const long: CryptoSignal = { action: "LONG", stopGainPct: 3, stopLossPct: 1, reason: "x" };
+    const short: CryptoSignal = { action: "SHORT", stopGainPct: 3, stopLossPct: 1, reason: "x" };
+    // Direção "long" + invert: LONG natural passa o filtro e é invertido -> SHORT.
+    expect(applyDirectionAndInvert(long, "long", true)?.action).toBe("SHORT");
+    // Direção "long" sem invert: LONG.
+    expect(applyDirectionAndInvert(long, "long", false)?.action).toBe("LONG");
+    // Direção "long": SHORT natural é rejeitado.
+    expect(applyDirectionAndInvert(short, "long", false)).toBeNull();
+    // Sem direção + invert: SHORT natural -> LONG.
+    expect(applyDirectionAndInvert(short, "all", true)?.action).toBe("LONG");
+    // Sem sinal -> null.
+    expect(applyDirectionAndInvert(null, "all", true)).toBeNull();
   });
 });

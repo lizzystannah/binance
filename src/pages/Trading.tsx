@@ -64,7 +64,7 @@ import {
 } from "@/lib/cryptoFutures";
 import { CRYPTO_FEE_RATE as SPOT_PAPER_FEE } from "@/lib/cryptoPaper";
 import { useBacktestMode, useBacktestResults, type ChartMarker } from "@/lib/backtestMode";
-import { getCryptoStrategy, listAllStrategies, useActiveStrategy } from "@/lib/cryptoStrategies";
+import { applyDirectionAndInvert, getCryptoStrategy, listAllStrategies, useActiveStrategy, useStrategyInvert } from "@/lib/cryptoStrategies";
 import { runCryptoBacktest } from "@/lib/cryptoBacktest";
 
 type EntryLine = { price: number; color: string; label: string; includeInScale?: boolean };
@@ -969,6 +969,7 @@ export default function Trading() {
   const setBacktestEnabled = useBacktestMode((s) => s.setEnabled);
   const activeStrategyId = useActiveStrategy((s) => s.activeStrategyId);
   const activeDirection = useActiveStrategy((s) => s.direction);
+  const invertMap = useStrategyInvert((s) => s.invert);
   const [btStrategyId, setBtStrategyId] = useState<string>("");
   const [btRunning, setBtRunning] = useState(false);
   const [btError, setBtError] = useState("");
@@ -977,6 +978,7 @@ export default function Trading() {
 
   // Direção efetivamente aplicada (só quando a estratégia escolhida é a ligada).
   const btDir = btStrategyId && btStrategyId === activeStrategyId ? activeDirection : "all";
+  const btInvert = !!invertMap[btStrategyId];
   // O resultado só é válido para o símbolo/TF em que correu.
   const btMatches = !!lastRun && lastRun.symbol === symbol && lastRun.interval === tf;
 
@@ -1341,14 +1343,8 @@ export default function Trading() {
       const paramsv = Object.fromEntries((strat.params ?? []).map((p) => [p.key, p.default]));
       const wrapped = {
         ...strat,
-        onSignal: (ctx: Parameters<typeof strat.onSignal>[0]) => {
-          const sig = strat.onSignal({ ...ctx, params: paramsv });
-          if (!sig) return null;
-          // Só sinais direcionais são filtrados; EXIT/FLAT/SELL passam (fecho).
-          if (sig.action === "LONG" && btDir === "short") return null;
-          if (sig.action === "SHORT" && btDir === "long") return null;
-          return sig;
-        },
+        onSignal: (ctx: Parameters<typeof strat.onSignal>[0]) =>
+          applyDirectionAndInvert(strat.onSignal({ ...ctx, params: paramsv }), btDir, btInvert),
       };
       const res = runCryptoBacktest(closed, wrapped, {
         capital: 10000,
@@ -1675,6 +1671,11 @@ export default function Trading() {
                 <span className="text-[10px] text-muted-foreground font-mono">
                   {symbol} · {tf}{btDir !== "all" ? ` · ${btDir}` : ""}
                 </span>
+                {btInvert && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded border border-warning/50 text-warning font-bold" title="Sinais desta estratégia estão invertidos (LONG↔SHORT)">
+                    INVERTIDO
+                  </span>
+                )}
                 <Button
                   size="sm"
                   className="h-8 text-[11px] font-bold"

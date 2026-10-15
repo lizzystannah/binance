@@ -31,6 +31,7 @@ function EditRobotDialog({ robot, onOpenChange }: { robot: CryptoRobot; onOpenCh
   const [maxPos, setMaxPos] = useState(String(robot.maxPositions));
   const [cooldown, setCooldown] = useState(String(robot.cooldownMin));
   const [fundingAware, setFundingAware] = useState(robot.fundingAware ?? true);
+  const [invert, setInvert] = useState(robot.invert ?? false);
   const [maxFunding, setMaxFunding] = useState(String(robot.maxFundingRatePct ?? 0.05));
 
   const save = () => {
@@ -48,6 +49,7 @@ function EditRobotDialog({ robot, onOpenChange }: { robot: CryptoRobot; onOpenCh
       cooldownMin: parseFloat(cooldown) || 0,
       fundingAware,
       maxFundingRatePct: parseFloat(maxFunding),
+      invert,
     };
     const errs = validateRobotConfig({ ...robot, ...patch, mode: "futures" });
     if (errs.length > 0) return toast.error(errs[0]);
@@ -129,6 +131,9 @@ function EditRobotDialog({ robot, onOpenChange }: { robot: CryptoRobot; onOpenCh
           <label className="flex items-center gap-2 col-span-2 text-muted-foreground">
             <Switch checked={fundingAware} onCheckedChange={setFundingAware} /> Funding awareness
           </label>
+          <label className="flex items-center gap-2 col-span-2 text-muted-foreground">
+            <Switch checked={invert} onCheckedChange={setInvert} /> Inverter sinais (LONG↔SHORT)
+          </label>
           <Button onClick={save} className="col-span-2 h-9 text-xs font-bold">Guardar alterações</Button>
         </div>
       </DialogContent>
@@ -178,6 +183,7 @@ export default function Robots() {
                 FUTUROS · {String(r.direction ?? "BOTH")} · {r.leverage ?? 5}x {r.marginMode ?? "isolated"}
                 {r.fundingAware ? ` · funding-aware (teto ${r.maxFundingRatePct ?? 0.05}%)` : ""}
                 {r.hedge ? " · hedge" : " · one-way"}
+                {r.invert ? " · INV" : ""}
               </div>
             </div>
           </div>

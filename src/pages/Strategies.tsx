@@ -1,6 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { useMemo, useState } from "react";
-import { BookOpen, Bot, FlaskConical, Play, Plus, Search, Star, Info, Trash2 } from "lucide-react";
+import { BookOpen, Bot, FlaskConical, Play, Plus, Repeat, Search, Star, Info, Trash2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -20,6 +20,7 @@ import {
   buildCustomStrategy,
   useActiveStrategy,
   useCustomStrategies,
+  useStrategyInvert,
   type StrategyDirection,
   type StrategyTemplateId,
 } from "@/lib/cryptoStrategies";
@@ -127,6 +128,7 @@ return null;                                // 4. sem sinal = null`}</pre>
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
               <li><strong>Criar robô:</strong> botão no card — nasce parado, copiando direção, timeframe e stops da estratégia. Ajusta capital, stake, leverage e liga na página Robôs.</li>
               <li><strong>Ligar (Switch):</strong> marca a estratégia como <em>ligada</em> — é com ela que a página de Backtest corre.</li>
+              <li><strong>Inverter:</strong> troca todos os sinais da estratégia (LONG↔SHORT). Aplica-se ao backtest e é copiado para os robôs criados a partir dela. O card fica com um anel de aviso enquanto estiver invertido.</li>
               <li><strong>Backtest:</strong> liga a estratégia e abre a página <strong>Trading</strong> em modo backtest. Aí clicas em “Rodar backtest” e o gráfico mostra cada trade: seta de entrada, realce da vela de entrada, caixa verde (entrada→TP) e vermelha (entrada→SL) da entrada até à saída, e losango onde fechou. Os números completos ficam na página <strong>Estatísticas</strong>.</li>
             </ul>
           </section>
@@ -278,6 +280,8 @@ export default function Strategies() {
   const activeStrategyId = useActiveStrategy((s) => s.activeStrategyId);
   const activeDirection = useActiveStrategy((s) => s.direction);
   const setActiveStrategy = useActiveStrategy((s) => s.setActive);
+  const invertMap = useStrategyInvert((s) => s.invert);
+  const toggleInvert = useStrategyInvert((s) => s.toggle);
   const customSpecs = useCustomStrategies((s) => s.specs);
   const removeCustom = useCustomStrategies((s) => s.remove);
   const customIds = useMemo(() => new Set(customSpecs.map((c) => c.id)), [customSpecs]);
@@ -324,6 +328,7 @@ export default function Strategies() {
       leverage: 5,
       marginMode: "isolated",
       fundingAware: true,
+      invert: !!invertMap[strategyId],
       capitalAllocated: 1000,
       stakePerEntry: 100,
       acctStopGainPct: s.defaults.stopGainPct,
@@ -417,7 +422,7 @@ export default function Strategies() {
                 const isActive = activeStrategyId === s.id;
                 const isCustom = customIds.has(s.id);
                 return (
-                  <div key={s.id} className={`panel p-4 flex flex-col gap-3 rounded-lg border ${isActive ? "border-primary/60" : "border-border/50"}`}>
+                  <div key={s.id} className={`panel p-4 flex flex-col gap-3 rounded-lg border ${isActive ? "border-primary/60" : "border-border/50"} ${invertMap[s.id] ? "ring-1 ring-warning/40" : ""}`}>
                     <div className="flex items-center justify-between gap-2">
                       <div className="font-bold text-base text-white flex items-center gap-2 min-w-0">
                         <button onClick={() => toggleFav(s.id)} className={favorites[s.id] ? "text-yellow-400" : "text-muted-foreground/30 hover:text-muted-foreground/60"}>
@@ -470,6 +475,20 @@ export default function Strategies() {
                         <option value="long">Só Long</option>
                         <option value="short">Só Short</option>
                       </select>
+                      <button
+                        onClick={() => {
+                          toggleInvert(s.id);
+                          toast.info(invertMap[s.id] ? "Sinais normais restaurados." : "Sinais invertidos (LONG↔SHORT).");
+                        }}
+                        title={invertMap[s.id] ? "Sinais INVERTIDOS — clica para restaurar" : "Inverter todos os sinais (LONG↔SHORT)"}
+                        className={`h-7 px-2 rounded border text-[10px] font-bold flex items-center gap-1 transition-colors ${
+                          invertMap[s.id]
+                            ? "border-warning/60 text-warning bg-warning/10"
+                            : "border-border text-muted-foreground hover:bg-secondary/50"
+                        }`}
+                      >
+                        <Repeat className="h-3 w-3" /> {invertMap[s.id] ? "Invertido" : "Inverter"}
+                      </button>
                       <span className="ml-auto flex items-center gap-1.5 text-muted-foreground">
                         <Play className="h-3 w-3" /> Ligar
                         <Switch checked={isActive} onCheckedChange={(v) => handleToggleActive(s.id, v)} />

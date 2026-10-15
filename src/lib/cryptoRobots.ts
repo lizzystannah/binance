@@ -28,6 +28,8 @@ export interface CryptoRobot {
   marginMode?: MarginMode;
   /** Hedge mode (futuros): permite LONG+SHORT simultâneos. Default false (one-way). */
   hedge?: boolean;
+  /** Se true, inverte todos os sinais da estratégia (LONG↔SHORT). */
+  invert?: boolean;
   /** Se true, evita abrir posição perto do funding quando fundingRate alto. */
   fundingAware?: boolean;
   /** Funding máximo tolerado (% por intervalo, ex: 0.05 = 0.05%). Acima disso, pausa entradas. */

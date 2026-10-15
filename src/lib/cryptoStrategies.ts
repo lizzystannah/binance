@@ -565,6 +565,49 @@ export const useActiveStrategy = create<ActiveStrategyStore>()(
   )
 );
 
+// ─── Inversão de sinal por estratégia ───────────────────────────────────────
+// Inverte LONG↔SHORT (BUY↔SELL) de todos os sinais da estratégia. Aplicado no
+// backtest e copiado para o robô criado a partir da estratégia.
+interface StrategyInvertStore {
+  invert: Record<string, boolean>;
+  setInvert: (id: string, v: boolean) => void;
+  toggle: (id: string) => void;
+}
+
+export const useStrategyInvert = create<StrategyInvertStore>()(
+  persist(
+    (set, get) => ({
+      invert: {},
+      setInvert: (id, v) => set({ invert: { ...get().invert, [id]: v } }),
+      toggle: (id) => set({ invert: { ...get().invert, [id]: !get().invert[id] } }),
+    }),
+    { name: "quantterm:strategy-invert" }
+  )
+);
+
+/** Inverte a ação de um sinal (LONG↔SHORT, BUY↔SELL). EXIT/FLAT não mudam. */
+export function invertCryptoAction(action: CryptoAction): CryptoAction {
+  if (action === "LONG" || action === "BUY") return "SHORT";
+  if (action === "SHORT" || action === "SELL") return "LONG";
+  return action;
+}
+
+/**
+ * Aplica o filtro de direção (sobre o sinal NATURAL) e depois a inversão.
+ * Ordem igual à da referência: direção filtra o sinal bruto; inverter é o passo final.
+ */
+export function applyDirectionAndInvert(
+  sig: CryptoSignal | null,
+  direction: "all" | "long" | "short",
+  invert: boolean
+): CryptoSignal | null {
+  if (!sig) return null;
+  if (sig.action === "LONG" && direction === "short") return null;
+  if (sig.action === "SHORT" && direction === "long") return null;
+  if (invert) return { ...sig, action: invertCryptoAction(sig.action), reason: `[inv] ${sig.reason}` };
+  return sig;
+}
+
 // ─── Estratégias personalizadas (botão "Nova estratégia") ───────────────────
 // Sem execução de código arbitrário: a personalizada escolhe um TEMPLATE
 // (lógica fixa e auditada) + parâmetros numéricos. O onSignal é gerado a
