@@ -162,3 +162,60 @@ describe("cryptoBacktest — honestidade", () => {
     expect(runCryptoBacktest(klines, noTrail, opts).trades[0].reason).toBe("END_OF_DATA");
   });
 });
+
+describe("proporcionalidade SL/TP (variação de preço exata)", () => {
+  const longStrat = (slPct: number, tpPct: number): CryptoSpotStrategy => ({
+    ...alwaysBuy,
+    id: `test_prop_${slPct}_${tpPct}`,
+    onSignal: () => ({ action: "BUY", stopGainPct: tpPct, stopLossPct: slPct, reason: "t" }),
+  });
+  const shortStrat = (slPct: number, tpPct: number): CryptoSpotStrategy => ({
+    ...alwaysBuy,
+    id: `test_props_${slPct}_${tpPct}`,
+    onSignal: () => ({ action: "SHORT", stopGainPct: tpPct, stopLossPct: slPct, reason: "t" }),
+  });
+  // 6 velas planas a 100 (alimentam o sinal) + vela de fill + vela que toca o nível.
+  const flat = (n: number, from = 0) => Array.from({ length: n }, (_, i) => candle(from + i, 100, 100, 100, 100));
+  const opts = { capital: 10000, stakePerEntry: 1000, feeRate: 0, slippageRate: 0 };
+
+  it("LONG: SL de 1.5% fica exatamente a 1.5% abaixo do fill e o pnlPct = −1.5%", () => {
+    // Vela de fill (índice 6) e uma vela posterior que toca 98.5 exatamente.
+    const klines = [...flat(6), candle(6, 100, 100.2, 98.5, 99), candle(7, 99, 99, 99, 99)];
+    const r = runCryptoBacktest(klines, longStrat(1.5, 3), opts);
+    const t = r.trades[0];
+    expect(t.entryPrice).toBeCloseTo(100, 10);
+    expect(t.stopLossPrice).toBeCloseTo(98.5, 10);
+    expect(t.takeProfitPrice).toBeCloseTo(103, 10);
+    // proporção exata pedida: 1.5%
+    expect((t.entryPrice - t.stopLossPrice) / t.entryPrice).toBeCloseTo(0.015, 12);
+    expect(t.reason).toBe("STOP_LOSS");
+    expect(t.pnlPct).toBeCloseTo(-1.5, 6); // leverage 1, sem taxas
+  });
+
+  it("LONG: 98.51 (não toca o SL) NÃO dispara — só o fim dos dados fecha", () => {
+    const klines = [...flat(6), candle(6, 100, 100.2, 98.51, 99), candle(7, 99, 99, 99, 99)];
+    const r = runCryptoBacktest(klines, longStrat(1.5, 3), opts);
+    expect(r.trades[0].reason).toBe("END_OF_DATA");
+  });
+
+  it("LONG: TP de 3% fica exatamente a 3% acima do fill e o pnlPct = +3%", () => {
+    const klines = [...flat(6), candle(6, 100, 103, 99.9, 102), candle(7, 102, 102, 102, 102)];
+    const r = runCryptoBacktest(klines, longStrat(1.5, 3), opts);
+    const t = r.trades[0];
+    expect(t.takeProfitPrice).toBeCloseTo(103, 10);
+    expect((t.takeProfitPrice - t.entryPrice) / t.entryPrice).toBeCloseTo(0.03, 12);
+    expect(t.reason).toBe("TAKE_PROFIT");
+    expect(t.pnlPct).toBeCloseTo(3, 6);
+  });
+
+  it("SHORT: SL de 1.5% fica exatamente acima do fill e dispara ao tocar", () => {
+    const klines = [...flat(6), candle(6, 100, 101.5, 99.8, 100.5), candle(7, 100.5, 100.5, 100.5, 100.5)];
+    const r = runCryptoBacktest(klines, shortStrat(1.5, 3), opts);
+    const t = r.trades[0];
+    expect(t.entryPrice).toBeCloseTo(100, 10);
+    expect(t.stopLossPrice).toBeCloseTo(101.5, 10);
+    expect((t.stopLossPrice - t.entryPrice) / t.entryPrice).toBeCloseTo(0.015, 12);
+    expect(t.reason).toBe("STOP_LOSS");
+    expect(t.pnlPct).toBeCloseTo(-1.5, 6);
+  });
+});
