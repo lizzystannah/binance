@@ -1,11 +1,12 @@
 import { AppShell } from "@/components/AppShell";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BookOpen, Cpu, Search, Info, Pencil } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Link } from "react-router-dom";
 import { useCryptoRobots, validateRobotConfig, type CryptoRobot } from "@/lib/cryptoRobots";
 import { getCryptoStrategy } from "@/lib/cryptoStrategies";
 import { FUTURES_TRADING_SYMBOLS } from "@/lib/binance";
+import { getTradingDay } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,8 +27,8 @@ function EditRobotDialog({ robot, onOpenChange }: { robot: CryptoRobot; onOpenCh
   const [marginMode, setMarginMode] = useState<string>(String(robot.marginMode ?? "isolated"));
   const [capital, setCapital] = useState(String(robot.capitalAllocated));
   const [stake, setStake] = useState(String(robot.stakePerEntry));
-  const [gain, setGain] = useState(String(robot.acctStopGainPct));
-  const [loss, setLoss] = useState(String(robot.acctStopLossPct));
+  const [gain, setGain] = useState(String(robot.dailyStopGainUsd ?? 0));
+  const [loss, setLoss] = useState(String(robot.dailyStopLossUsd ?? 0));
   const [maxPos, setMaxPos] = useState(String(robot.maxPositions));
   const [cooldown, setCooldown] = useState(String(robot.cooldownMin));
   const [fundingAware, setFundingAware] = useState(robot.fundingAware ?? true);
@@ -43,8 +44,8 @@ function EditRobotDialog({ robot, onOpenChange }: { robot: CryptoRobot; onOpenCh
       marginMode: marginMode as CryptoRobot["marginMode"],
       capitalAllocated: parseFloat(capital),
       stakePerEntry: parseFloat(stake),
-      acctStopGainPct: parseFloat(gain),
-      acctStopLossPct: parseFloat(loss),
+      dailyStopGainUsd: parseFloat(gain) || 0,
+      dailyStopLossUsd: parseFloat(loss) || 0,
       maxPositions: parseInt(maxPos) || 2,
       cooldownMin: parseFloat(cooldown) || 0,
       fundingAware,
@@ -113,11 +114,11 @@ function EditRobotDialog({ robot, onOpenChange }: { robot: CryptoRobot; onOpenCh
             <Input value={stake} onChange={(e) => setStake(e.target.value)} className="h-8 font-mono" inputMode="decimal" />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground">Stop-gain conta %</span>
+            <span className="text-muted-foreground">Stop-gain diário $</span>
             <Input value={gain} onChange={(e) => setGain(e.target.value)} className="h-8 font-mono" inputMode="decimal" />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground">Stop-loss conta %</span>
+            <span className="text-muted-foreground">Stop-loss diário $</span>
             <Input value={loss} onChange={(e) => setLoss(e.target.value)} className="h-8 font-mono" inputMode="decimal" />
           </label>
           <label className="flex flex-col gap-1">
@@ -149,6 +150,14 @@ export default function Robots() {
   const nSpotLegacy = allRobots.filter((r) => (r.mode ?? "futures") === "spot").length;
   const setActive = useCryptoRobots((s) => s.setActive);
   const removeRobot = useCryptoRobots((s) => s.removeRobot);
+  const ensureDay = useCryptoRobots((s) => s.ensureDay);
+
+  // Repõe os contadores diários quando o dia de trading muda.
+  useEffect(() => {
+    ensureDay(getTradingDay());
+    const id = setInterval(() => ensureDay(getTradingDay()), 60_000);
+    return () => clearInterval(id);
+  }, [ensureDay]);
 
   const filtered = robots.filter(
     (r) =>
@@ -222,9 +231,23 @@ export default function Robots() {
           </div>
         </div>
         <div className="px-4 py-3 grid grid-cols-3 gap-2 text-xs font-mono border-t border-border/30">
+          <div><div className="text-[9px] text-muted-foreground uppercase">Trades</div>{r.tradesCount ?? 0}</div>
+          <div>
+            <div className="text-[9px] text-muted-foreground uppercase">PnL total</div>
+            <span className={(r.pnlUsd ?? 0) >= 0 ? "text-bull" : "text-bear"}>{(r.pnlUsd ?? 0) >= 0 ? "+" : ""}${(r.pnlUsd ?? 0).toFixed(2)}</span>
+          </div>
+          <div>
+            <div className="text-[9px] text-muted-foreground uppercase">PnL hoje</div>
+            <span className={(r.dailyPnlUsd ?? 0) >= 0 ? "text-bull" : "text-bear"}>{(r.dailyPnlUsd ?? 0) >= 0 ? "+" : ""}${(r.dailyPnlUsd ?? 0).toFixed(2)}</span>
+            <span className="text-muted-foreground"> · {r.dailyTrades ?? 0}t</span>
+          </div>
           <div><div className="text-[9px] text-muted-foreground uppercase">Alocado</div>${r.capitalAllocated.toFixed(0)}</div>
           <div><div className="text-[9px] text-muted-foreground uppercase">Stake</div>${r.stakePerEntry.toFixed(0)}</div>
-          <div><div className="text-[9px] text-muted-foreground uppercase">Stop conta</div><span className="text-bull">+{r.acctStopGainPct}%</span> / <span className="text-bear">−{r.acctStopLossPct}%</span></div>
+          <div>
+            <div className="text-[9px] text-muted-foreground uppercase">Stops diários</div>
+            <span className="text-bull">+${(r.dailyStopGainUsd ?? 0).toFixed(0)}</span> / <span className="text-bear">−${(r.dailyStopLossUsd ?? 0).toFixed(0)}</span>
+            {(r.dailyStopGainUsd ?? 0) === 0 && (r.dailyStopLossUsd ?? 0) === 0 && <span className="text-muted-foreground"> · off</span>}
+          </div>
           {r.stoppedReason && !r.active && (
             <div className="col-span-3 text-[11px] text-warning">Parado: {r.stoppedReason}</div>
           )}
@@ -307,10 +330,11 @@ export default function Robots() {
           </h2>
           <ul className="text-[12px] text-muted-foreground list-disc pl-5 space-y-1">
             <li><strong className="text-foreground">Nascem nas Estratégias:</strong> cada card tem “Criar robô” — abre os parâmetros (par, timeframe, direção, valor de entrada, alavancagem, stop-gain, stop-loss) e o robô nasce parado, ligado ao <code className="font-mono">strategyId</code> da estratégia.</li>
-            <li><strong className="text-foreground">Conta paper:</strong> o robô opera com o capital alocado virtual (stake por entrada, stops da conta, cooldown, máx. 5 posições). Nada sai para a corretora.</li>
+            <li><strong className="text-foreground">Conta paper:</strong> o robô opera com o capital alocado virtual (valor de entrada por trade, cooldown, máx. 5 posições). Nada sai para a corretora.</li>
             <li><strong className="text-foreground">Execução:</strong> o “Ligar” arma e valida a configuração. A execução automática das entradas pelo motor de Futuros é o próximo passo da plataforma — até lá, usa o Backtest para validar a estratégia.</li>
             <li><strong className="text-foreground">Direção:</strong> LONG abre compras, SHORT abre vendas, ambos aceita os dois sinais. O sinal da estratégia decide; a direção filtra.</li>
-            <li><strong className="text-foreground">Proteções:</strong> stop-gain/stop-loss da conta param o robô com motivo registado; funding awareness pausa entradas com funding alto; cooldown evita overtrading.</li>
+            <li><strong className="text-foreground">Stops diários (USD):</strong> stop-gain e stop-loss <strong>em dólares sobre o PnL do dia</strong> do robô (0 = sem limite). Quando o PnL do dia atinge o limite, o robô para (aplicado pelo motor de execução).</li>
+            <li><strong className="text-foreground">Resultados no card:</strong> número de <em>trades</em>, <em>PnL total</em> e <em>PnL de hoje</em>. Os contadores diários repõem-se a cada dia.</li>
             <li><strong className="text-foreground">Ajustes:</strong> usa o lápis no card para editar símbolo, timeframe, leverage, margem, stake, stops e funding. Robôs ativos precisam de ser parados antes de editar.</li>
             <li><strong className="text-foreground">Validação:</strong> ao ligar, a configuração é revalidada (margem, limites, estratégia existente). Se algo estiver errado, o robô para com o motivo visível no card.</li>
           </ul>

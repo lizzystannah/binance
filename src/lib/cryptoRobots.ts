@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { uid } from "./cryptoPaper";
+import { getTradingDay } from "./utils";
 import { getCryptoStrategy } from "./cryptoStrategies";
 
 export type RobotMode = "spot" | "futures";
@@ -36,19 +37,34 @@ export interface CryptoRobot {
   maxFundingRatePct?: number;
   capitalAllocated: number;
   stakePerEntry: number;
-  acctStopGainPct: number;
-  acctStopLossPct: number;
+  /** (Legado) stops da conta em % — substituídos pelos stops diários em USD. */
+  acctStopGainPct?: number;
+  acctStopLossPct?: number;
+  /** Stop-gain diário em USD sobre o PnL do robô (0 = sem limite). */
+  dailyStopGainUsd?: number;
+  /** Stop-loss diário em USD sobre o PnL do robô (0 = sem limite). */
+  dailyStopLossUsd?: number;
   maxPositions: number;
   cooldownMin: number;
   active: boolean;
   createdAt: number;
   lastEntryAt: number | null;
   stoppedReason: string | null;
+  /** Trades executados desde a criação. */
+  tradesCount: number;
+  /** PnL realizado total (USD) desde a criação. */
+  pnlUsd: number;
+  /** Trades executados hoje. */
+  dailyTrades: number;
+  /** PnL realizado hoje (USD). */
+  dailyPnlUsd: number;
+  /** Dia de trading dos contadores diários (reset quando muda). */
+  dayKey: string;
 }
 
 export type NewCryptoRobot = Omit<
   CryptoRobot,
-  "id" | "createdAt" | "lastEntryAt" | "stoppedReason" | "active"
+  "id" | "createdAt" | "lastEntryAt" | "stoppedReason" | "active" | "tradesCount" | "pnlUsd" | "dailyTrades" | "dailyPnlUsd" | "dayKey"
 > & { active?: boolean };
 
 export const CRYPTO_INTERVALS = ["1m", "5m", "15m", "1h", "4h"] as const;
@@ -102,10 +118,14 @@ export function validateRobotConfig(r: NewCryptoRobot): string[] {
     r.stakePerEntry > r.capitalAllocated
   )
     errs.push("Stake por entrada não pode exceder o capital alocado.");
-  if (!Number.isFinite(r.acctStopGainPct) || r.acctStopGainPct <= 0)
-    errs.push("Stop-gain da conta (%) obrigatório e > 0.");
-  if (!Number.isFinite(r.acctStopLossPct) || r.acctStopLossPct <= 0)
-    errs.push("Stop-loss da conta (%) obrigatório e > 0.");
+  if (!Number.isFinite(r.acctStopGainPct ?? 0) || (r.acctStopGainPct ?? 0) < 0)
+    errs.push("Stop-gain da conta (%) inválido.");
+  if (!Number.isFinite(r.acctStopLossPct ?? 0) || (r.acctStopLossPct ?? 0) < 0)
+    errs.push("Stop-loss da conta (%) inválido.");
+  if (r.dailyStopGainUsd !== undefined && (!Number.isFinite(r.dailyStopGainUsd) || r.dailyStopGainUsd < 0))
+    errs.push("Stop-gain diário ($) inválido.");
+  if (r.dailyStopLossUsd !== undefined && (!Number.isFinite(r.dailyStopLossUsd) || r.dailyStopLossUsd < 0))
+    errs.push("Stop-loss diário ($) inválido.");
   if (!Number.isInteger(r.maxPositions) || r.maxPositions < 1 || r.maxPositions > 5)
     errs.push("Nº máximo de posições: 1 a 5.");
   if (!Number.isFinite(r.cooldownMin) || r.cooldownMin < 0)
@@ -118,7 +138,13 @@ export function normalizeRobotDefaults(r: NewCryptoRobot): NewCryptoRobot {
   const mode = r.mode ?? "futures";
   if (mode === "spot") {
     const { leverage: _l, marginMode: _m, hedge: _h, ...rest } = r as Record<string, unknown>;
-    return { ...rest, mode: "spot", direction: (r.direction as FuturesDirection | "BUY" | undefined) ?? "BUY" } as NewCryptoRobot;
+    return {
+      ...rest,
+      mode: "spot",
+      direction: (r.direction as FuturesDirection | "BUY" | undefined) ?? "BUY",
+      dailyStopGainUsd: r.dailyStopGainUsd ?? 0,
+      dailyStopLossUsd: r.dailyStopLossUsd ?? 0,
+    } as NewCryptoRobot;
   }
   return {
     ...r,
@@ -129,6 +155,8 @@ export function normalizeRobotDefaults(r: NewCryptoRobot): NewCryptoRobot {
     hedge: r.hedge ?? false,
     fundingAware: r.fundingAware ?? true,
     maxFundingRatePct: r.maxFundingRatePct ?? DEFAULT_MAX_FUNDING_RATE_PCT,
+    dailyStopGainUsd: r.dailyStopGainUsd ?? 0,
+    dailyStopLossUsd: r.dailyStopLossUsd ?? 0,
   } as NewCryptoRobot;
 }
 
@@ -140,6 +168,10 @@ interface CryptoRobotsStore {
   /** Ao ligar, revalida a config (protege contra localStorage adulterado). */
   setActive: (id: string, active: boolean, stoppedReason?: string | null) => boolean;
   markEntry: (id: string, ts?: number) => void;
+  /** Regista o resultado de um trade fechado (atualiza totais e contadores diários). */
+  recordTrade: (id: string, pnlUsd: number, day?: string) => void;
+  /** Repõe os contadores diários quando o dia de trading muda. */
+  ensureDay: (day: string) => void;
 }
 
 export const useCryptoRobots = create<CryptoRobotsStore>()(
@@ -159,6 +191,11 @@ export const useCryptoRobots = create<CryptoRobotsStore>()(
           createdAt: Date.now(),
           lastEntryAt: null,
           stoppedReason: null,
+          tradesCount: 0,
+          pnlUsd: 0,
+          dailyTrades: 0,
+          dailyPnlUsd: 0,
+          dayKey: getTradingDay(),
         };
         set((s) => ({ robots: [robot, ...s.robots] }));
         return { ok: true, id };
@@ -197,6 +234,32 @@ export const useCryptoRobots = create<CryptoRobotsStore>()(
         set((s) => ({
           robots: s.robots.map((r) => (r.id === id ? { ...r, lastEntryAt: ts ?? Date.now() } : r)),
         })),
+
+      recordTrade: (id, pnlUsd, day = getTradingDay()) =>
+        set((s) => ({
+          robots: s.robots.map((r) => {
+            if (r.id !== id) return r;
+            const sameDay = r.dayKey === day;
+            return {
+              ...r,
+              tradesCount: (r.tradesCount ?? 0) + 1,
+              pnlUsd: (r.pnlUsd ?? 0) + pnlUsd,
+              dailyTrades: (sameDay ? (r.dailyTrades ?? 0) : 0) + 1,
+              dailyPnlUsd: (sameDay ? (r.dailyPnlUsd ?? 0) : 0) + pnlUsd,
+              dayKey: day,
+            };
+          }),
+        })),
+
+      ensureDay: (day) =>
+        set((s) => {
+          if (s.robots.every((r) => r.dayKey === day)) return s;
+          return {
+            robots: s.robots.map((r) =>
+              r.dayKey === day ? r : { ...r, dayKey: day, dailyTrades: 0, dailyPnlUsd: 0 }
+            ),
+          };
+        }),
     }),
     { name: "quantern:crypto-robots" }
   )

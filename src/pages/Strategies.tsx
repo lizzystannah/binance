@@ -52,7 +52,7 @@ function DocsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: b
             <ul className="text-[13px] text-muted-foreground list-disc pl-5 space-y-0.5">
               <li>Botão <strong className="text-foreground">“Nova estratégia”</strong>: cola o código e clica em <em>Validar e criar</em>. O <code className="font-mono">id</code>, o <code className="font-mono">name</code> e a <code className="font-mono">description</code> são lidos do próprio código — não os escreves à mão.</li>
               <li>Podes colar <strong className="text-foreground">TypeScript</strong> (o servidor compila com esbuild) ou JavaScript puro. O objeto tem de ser <strong className="text-foreground">exportado</strong> — caso contrário a plataforma não o encontra.</li>
-              <li><strong className="text-foreground">Stops, entrada e alavancagem NÃO ficam na estratégia</strong> — definem-se ao criar o robô (SL%, TP%, entrada $, alavancagem) e são editáveis depois.</li>
+              <li><strong className="text-foreground">Stops, entrada e alavancagem NÃO ficam na estratégia</strong> — definem-se ao criar o robô (entrada $, alavancagem, stop-gain e stop-loss <strong>diários em USD</strong>) e são editáveis depois.</li>
               <li><strong className="text-foreground">Formato do código:</strong> usa <code className="font-mono">export default {"{ ... }"}</code> (o mais simples) — a plataforma lê o <code className="font-mono">id</code> e o <code className="font-mono">name</code> daí. Também aceita <code className="font-mono">module.exports = {"{...}"}</code> ou um export nomeado (<code className="font-mono">export const minha = {"{...}"}</code>).</li>
             </ul>
           </section>
@@ -284,8 +284,8 @@ function CreateRobotDialog({ strategy, invert, direction, onOpenChange }: {
   const [dir, setDir] = useState<FuturesDirection>(direction === "long" ? "LONG" : direction === "short" ? "SHORT" : "BOTH");
   const [leverage, setLeverage] = useState("5");
   const [entry, setEntry] = useState("100");
-  const [tp, setTp] = useState(String(strategy.defaults.stopGainPct));
-  const [sl, setSl] = useState(String(strategy.defaults.stopLossPct));
+  const [dailyGain, setDailyGain] = useState("0");
+  const [dailyLoss, setDailyLoss] = useState("0");
   const [capital, setCapital] = useState("1000");
   const [maxPos, setMaxPos] = useState("2");
   const [cooldown, setCooldown] = useState("30");
@@ -304,8 +304,8 @@ function CreateRobotDialog({ strategy, invert, direction, onOpenChange }: {
       invert,
       capitalAllocated: parseFloat(capital) || 0,
       stakePerEntry: parseFloat(entry) || 0,
-      acctStopGainPct: parseFloat(tp) || 0,
-      acctStopLossPct: parseFloat(sl) || 0,
+      dailyStopGainUsd: parseFloat(dailyGain) || 0,
+      dailyStopLossUsd: parseFloat(dailyLoss) || 0,
       maxPositions: parseInt(maxPos) || 2,
       cooldownMin: parseFloat(cooldown) || 0,
     });
@@ -364,12 +364,12 @@ function CreateRobotDialog({ strategy, invert, direction, onOpenChange }: {
             <Input value={capital} onChange={(e) => setCapital(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">Stop-gain %</span>
-            <Input value={tp} onChange={(e) => setTp(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
+            <span className="text-xs text-muted-foreground">Stop-gain diário $ (0 = sem limite)</span>
+            <Input value={dailyGain} onChange={(e) => setDailyGain(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">Stop-loss %</span>
-            <Input value={sl} onChange={(e) => setSl(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
+            <span className="text-xs text-muted-foreground">Stop-loss diário $ (0 = sem limite)</span>
+            <Input value={dailyLoss} onChange={(e) => setDailyLoss(e.target.value)} className="h-9 text-xs font-mono" inputMode="decimal" />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs text-muted-foreground">Máx. posições (1–5)</span>
@@ -499,8 +499,8 @@ export default function Strategies() {
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-primary" />
             <span>
               Cria a estratégia colando código (id/nome são lidos do código). O botão <strong>Criar robô</strong> abre
-              os parâmetros (direção, entrada, alavancagem, stop-gain, stop-loss) e o robô opera exatamente o
-              <code className="font-mono"> onSignal</code> desta estratégia. Tudo na conta paper — sem alavancagem real.
+              os parâmetros (par, direção, entrada $, alavancagem, stop-gain/stop-loss diários em USD) e o robô opera
+              exatamente o <code className="font-mono"> onSignal</code> desta estratégia. Tudo na conta paper.
             </span>
           </div>
           <div className="flex flex-wrap gap-2 items-center">
