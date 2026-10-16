@@ -139,4 +139,26 @@ describe("cryptoBacktest — honestidade", () => {
     expect(withSpread.trades[0].spreadPaid).toBeGreaterThan(0);
     expect(withSpread.trades[0].pnl).toBeLessThan(noSpread.trades[0].pnl);
   });
+
+  it("trailing fecha o trade antes do SL; sem trailing só sai no fim dos dados", () => {
+    const withTrail: CryptoSpotStrategy = {
+      ...alwaysBuy,
+      id: "test_trail",
+      onSignal: () => ({ action: "BUY", stopGainPct: 1000, stopLossPct: 1000, trailingPct: 1, reason: "t" }),
+    };
+    const noTrail: CryptoSpotStrategy = {
+      ...alwaysBuy,
+      id: "test_notrail",
+      onSignal: () => ({ action: "BUY", stopGainPct: 1000, stopLossPct: 1000, reason: "t" }),
+    };
+    const klines = [
+      ...Array.from({ length: 6 }, (_, i) => candle(i, 100, 100, 100, 100)),
+      candle(6, 100, 110, 100, 110), // sobe até 110
+      candle(7, 110, 110, 105, 106), // recua
+      ...Array.from({ length: 4 }, (_, i) => candle(8 + i, 106, 106, 100, 100)),
+    ];
+    const opts = { capital: 10000, stakePerEntry: 1000, feeRate: 0, slippageRate: 0 };
+    expect(runCryptoBacktest(klines, withTrail, opts).trades[0].reason).toBe("TRAILING");
+    expect(runCryptoBacktest(klines, noTrail, opts).trades[0].reason).toBe("END_OF_DATA");
+  });
 });

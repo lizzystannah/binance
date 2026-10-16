@@ -1444,8 +1444,9 @@ export default function Trading() {
           const sig = applyDirectionAndInvert(strat.onSignal({ ...ctx, params: paramsv }), btDir, btInvert);
           if (!sig) return null;
           // Override dos stops pelo painel (a não ser que use os da estratégia).
+          // Sem trailing quando o TP/SL é manual — senão fechava antes de os tocar.
           if (!btUseStratStops) {
-            return { ...sig, stopGainPct: tpOv, stopLossPct: slOv, reason: `${sig.reason} · TP${tpOv}%/SL${slOv}%` };
+            return { ...sig, stopGainPct: tpOv, stopLossPct: slOv, trailingPct: undefined, reason: `${sig.reason} · TP${tpOv}%/SL${slOv}%` };
           }
           return sig;
         },
@@ -1883,6 +1884,9 @@ export default function Trading() {
                   <Checkbox checked={btUseStratStops} onCheckedChange={(v) => setBtUseStratStops(!!v)} className="h-3.5 w-3.5" />
                   Usar os stops definidos pela própria estratégia
                 </label>
+                <p className="text-[10px] text-muted-foreground -mt-1">
+                  Desligado: usa os teus TP/SL (sem trailing). Ligado: usa os stops da estratégia (pode incluir trailing).
+                </p>
 
                 <div>
                   <label className="text-[9px] text-muted-foreground uppercase font-bold">Capital inicial $</label>
